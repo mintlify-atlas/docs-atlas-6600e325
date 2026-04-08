@@ -1,0 +1,205 @@
+---
+title: "DVR (Digital Video Recording)"
+description: "Record live RTMP streams to FLV or MP4 files on disk with flexible naming and segmentation options."
+---
+
+DVR (Digital Video Recording) lets SRS automatically record live streams to disk as they arrive. Recordings can be split by time (segment mode), written as a single file per publish session (session mode), and saved as either FLV or MP4.
+
+<Note>
+  DVR is only supported on **origin** servers. Edge servers silently ignore DVR configuration at runtime.
+</Note>
+
+---
+
+## DVR Modes
+
+<Tabs>
+  <Tab title="Segment">
+    Cuts a new file every `dvr_duration` seconds. Ideal for time-based archiving or video-on-demand workflows where you want predictable chunk sizes.
+
+    ```conf
+    # dvr.segment.conf
+    max_connections     1000;
+    daemon              off;
+    srs_log_tank        console;
+
+    rtmp {
+        listen              1935;
+    }
+    vhost __defaultVhost__ {
+        dvr {
+            enabled             on;
+            dvr_path            ./objs/nginx/html/[app]/[stream].[timestamp].flv;
+            dvr_plan            segment;
+            dvr_duration        30;
+            dvr_wait_keyframe   on;
+        }
+    }
+    ```
+
+    | Directive           | Value | Description                                                    |
+    |---------------------|-------|----------------------------------------------------------------|
+    | `dvr_plan`          | `segment` | Cut a new file every `dvr_duration` seconds.              |
+    | `dvr_duration`      | `30`  | Segment length in seconds (default: 30).                       |
+    | `dvr_wait_keyframe` | `on`  | Wait for a keyframe before cutting, ensuring clean seeks.      |
+  </Tab>
+
+  <Tab title="Session">
+    Writes one file for the entire publish session. Recording starts when the encoder connects and the file is finalized when the encoder disconnects.
+
+    ```conf
+    # dvr.session.conf
+    max_connections     1000;
+    daemon              off;
+    srs_log_tank        console;
+
+    rtmp {
+        listen              1935;
+    }
+    vhost __defaultVhost__ {
+        dvr {
+            enabled      on;
+            dvr_path     ./objs/nginx/html/[app]/[stream].[timestamp].flv;
+            dvr_plan     session;
+        }
+    }
+    ```
+
+    `dvr_duration` and `dvr_wait_keyframe` have no effect in session mode.
+  </Tab>
+
+  <Tab title="MP4">
+    Same as session mode but outputs an MP4 container instead of FLV. Change the extension in `dvr_path` from `.flv` to `.mp4`.
+
+    ```conf
+    # dvr.mp4.conf
+    max_connections     1000;
+    daemon              off;
+    srs_log_tank        console;
+
+    rtmp {
+        listen              1935;
+    }
+    vhost __defaultVhost__ {
+        dvr {
+            enabled      on;
+            dvr_path     ./objs/nginx/html/[app]/[stream].[timestamp].mp4;
+            dvr_plan     session;
+        }
+    }
+    ```
+
+    <Warning>
+      MP4 files require the `moov` atom to be written at the end of the recording. If SRS crashes or the process is killed before the encoder stops, the MP4 file may be unplayable. FLV files are more resilient to unclean shutdowns.
+    </Warning>
+  </Tab>
+</Tabs>
+
+---
+
+## Path Templating
+
+The `dvr_path` directive supports variable substitution to build dynamic filenames and directory structures.
+
+| Variable      | Replaced with                                | Example           |
+|---------------|----------------------------------------------|-------------------|
+| `[vhost]`     | Virtual host name                            | `ossrs.net`       |
+| `[app]`       | Application name                             | `live`            |
+| `[stream]`    | Stream name                                  | `livestream`      |
+| `[timestamp]` | UNIX timestamp in milliseconds               | `1420254068776`   |
+| `[2006]`      | Current year (Go time format constant)       | `2015`            |
+| `[01]`        | Current month (zero-padded)                  | `01`              |
+| `[02]`        | Current day (zero-padded)                    | `03`              |
+| `[15]`        | Current hour (24-hour, zero-padded)          | `10`              |
+| `[04]`        | Current minute (zero-padded)                 | `57`              |
+| `[05]`        | Current second (zero-padded)                 | `30`              |
+| `[999]`       | Current millisecond (zero-padded)            | `776`             |
+
+<Note>
+  SRS uses Go's time format constants. The reference time is `2006-01-02 15:04:05.999`, which is why the year variable is `[2006]`, the month is `[01]`, etc.
+</Note>
+
+### Path examples
+
+For a stream `rtmp://ossrs.net/live/livestream` recorded at `2015-01-03 10:57:30.776`:
+
+```conf
+# Date-based directory, timestamp filename
+dvr_path /data/[vhost]/[app]/[stream]/[2006]/[01]/[02]/[15].[04].[05].[999].flv;
+# => /data/ossrs.net/live/livestream/2015/01/03/10.57.30.776.flv
+
+# Year/month directory, date+time filename
+dvr_path /data/[vhost]/[app]/[stream]/[2006]/[01]/[02]-[15].[04].[05].[999].flv;
+# => /data/ossrs.net/live/livestream/2015/01/03-10.57.30.776.flv
+
+# vhost+app+year/month directory, stream+date+time filename
+dvr_path /data/[vhost]/[app]/[2006]/[01]/[stream]-[02]-[15].[04].[05].[999].flv;
+# => /data/ossrs.net/live/2015/01/livestream-03-10.57.30.776.flv
+
+# MP4 with unix timestamp
+dvr_path ./objs/nginx/html/[app]/[stream].[timestamp].mp4;
+# => ./objs/nginx/html/live/livestream.1420254068776.mp4
+```
+
+---
+
+## Filtering Streams
+
+By default, DVR applies to all streams (`dvr_apply all`). You can restrict it to specific app/stream combinations:
+
+```conf
+dvr {
+    enabled   on;
+    dvr_apply live/stream1 live/stream2;
+    dvr_plan  session;
+    dvr_path  ./objs/nginx/html/[app]/[stream].[timestamp].flv;
+}
+```
+
+---
+
+## HTTP Callback on DVR Complete
+
+When a DVR segment or session file is finalized, SRS can notify your application via the `on_dvr` HTTP hook. Configure it inside `http_hooks`:
+
+```conf
+vhost __defaultVhost__ {
+    http_hooks {
+        enabled  on;
+        on_dvr   http://127.0.0.1:8085/api/v1/dvrs;
+    }
+    dvr {
+        enabled  on;
+        dvr_plan segment;
+        dvr_path ./objs/nginx/html/[app]/[stream].[timestamp].flv;
+        dvr_duration 30;
+    }
+}
+```
+
+SRS POSTs a JSON payload to the `on_dvr` URL when a file is complete:
+
+```json
+{
+    "action":    "on_dvr",
+    "client_id": "g3h2l910",
+    "ip":        "192.168.1.10",
+    "vhost":     "__defaultVhost__",
+    "app":       "live",
+    "stream":    "livestream",
+    "cwd":       "/usr/local/srs",
+    "file":      "./objs/nginx/html/live/livestream.1420254068776.flv"
+}
+```
+
+See [HTTP Callbacks](/advanced/http-callbacks) for full callback documentation.
+
+---
+
+## Storage Considerations
+
+- **Disk space**: Segment mode with a 30-second duration at 1 Mbps generates ~225 MB/hour per stream.
+- **File system**: Use a file system with good small-file performance (ext4, XFS) for segment mode.
+- **Path permissions**: The SRS process must have write access to the `dvr_path` directory.
+- **Cleanup**: SRS does not delete old DVR files. Implement a cron job or use the `on_dvr` callback to trigger cleanup.
+- **NFS/network storage**: Avoid NFS for segment mode with short durations; local SSDs are preferred for high-throughput recording.

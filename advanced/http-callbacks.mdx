@@ -1,0 +1,342 @@
+---
+title: "HTTP Callbacks"
+description: "Receive HTTP POST notifications for stream lifecycle events and use them to authenticate publishers, trigger workflows, or deny access."
+---
+
+SRS sends HTTP POST requests to your application server when stream lifecycle events occur. This lets you authenticate publishers, track viewer sessions, trigger post-processing pipelines, and more — without modifying SRS itself.
+
+---
+
+## Configuration
+
+Enable `http_hooks` inside a `vhost` block and list a URL for each event you want to receive. Multiple URLs (space-separated) are supported; SRS calls each in order.
+
+```conf
+# http.hooks.callback.conf
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+
+rtmp {
+    listen              1935;
+}
+vhost __defaultVhost__ {
+    http_hooks {
+        enabled         on;
+        on_publish      http://127.0.0.1:8085/api/v1/streams http://localhost:8085/api/v1/streams;
+        on_unpublish    http://127.0.0.1:8085/api/v1/streams http://localhost:8085/api/v1/streams;
+        on_play         http://127.0.0.1:8085/api/v1/sessions http://localhost:8085/api/v1/sessions;
+        on_stop         http://127.0.0.1:8085/api/v1/sessions http://localhost:8085/api/v1/sessions;
+    }
+}
+```
+
+The full set of supported hooks:
+
+```conf
+http_hooks {
+    enabled         on;
+    on_connect      http://127.0.0.1:8085/api/v1/clients;
+    on_close        http://127.0.0.1:8085/api/v1/clients;
+    on_publish      http://127.0.0.1:8085/api/v1/streams;
+    on_unpublish    http://127.0.0.1:8085/api/v1/streams;
+    on_play         http://127.0.0.1:8085/api/v1/sessions;
+    on_stop         http://127.0.0.1:8085/api/v1/sessions;
+    on_dvr          http://127.0.0.1:8085/api/v1/dvrs;
+    on_hls          http://127.0.0.1:8085/api/v1/hls;
+    on_hls_notify   http://127.0.0.1:8085/[app]/[stream].m3u8;
+}
+```
+
+---
+
+## Events Reference
+
+<Accordion title="on_connect — client connects to vhost">
+  **Fired when:** any client (publisher or viewer) first connects to an RTMP vhost, before publishing or playing.
+
+  **Validation:** SRS waits for your response. Return HTTP 200 with `{"code": 0}` to allow. Return `{"code": <non-zero>}` to deny the connection.
+
+  **Use case:** early-stage authentication before the client declares intent.
+
+  **Request payload:**
+  ```json
+  {
+      "action":    "on_connect",
+      "client_id": "g3h2l910",
+      "ip":        "192.168.1.10",
+      "vhost":     "__defaultVhost__",
+      "app":       "live",
+      "stream":    "",
+      "param":     "?token=abc123",
+      "tcUrl":     "rtmp://192.168.1.10/live",
+      "pageUrl":   "https://example.com/player.html"
+  }
+  ```
+</Accordion>
+
+<Accordion title="on_close — client disconnects from vhost">
+  **Fired when:** any client disconnects from a vhost (after on_connect was called).
+
+  **Validation:** notification only. The response value is ignored (errors are silently discarded).
+
+  **Request payload:**
+  ```json
+  {
+      "action":      "on_close",
+      "client_id":   "g3h2l910",
+      "ip":          "192.168.1.10",
+      "vhost":       "__defaultVhost__",
+      "app":         "live",
+      "send_bytes":  15728640,
+      "recv_bytes":  204800
+  }
+  ```
+</Accordion>
+
+<Accordion title="on_publish — stream starts publishing">
+  **Fired when:** an encoder (publisher) connects and begins pushing a stream.
+
+  **Validation:** SRS waits for your response. Return HTTP 200 with `{"code": 0}` to allow. Return `{"code": <non-zero>}` to deny — the publisher will be disconnected.
+
+  **Use case:** authenticate stream keys, enforce concurrent publish limits.
+
+  **Request payload:**
+  ```json
+  {
+      "action":    "on_publish",
+      "client_id": "g3h2l910",
+      "ip":        "192.168.1.10",
+      "vhost":     "__defaultVhost__",
+      "app":       "live",
+      "stream":    "livestream",
+      "param":     "?token=abc123"
+  }
+  ```
+</Accordion>
+
+<Accordion title="on_unpublish — stream stops publishing">
+  **Fired when:** the encoder disconnects or stops pushing.
+
+  **Validation:** notification only. The return value is ignored; unpublishing cannot be prevented.
+
+  **Request payload:**
+  ```json
+  {
+      "action":    "on_unpublish",
+      "client_id": "g3h2l910",
+      "ip":        "192.168.1.10",
+      "vhost":     "__defaultVhost__",
+      "app":       "live",
+      "stream":    "livestream",
+      "param":     ""
+  }
+  ```
+</Accordion>
+
+<Accordion title="on_play — viewer starts watching">
+  **Fired when:** a viewer connects to consume a stream (RTMP, HTTP-FLV, etc.).
+
+  **Validation:** SRS waits for your response. Return `{"code": 0}` to allow playback or `{"code": <non-zero>}` to deny the viewer.
+
+  **Use case:** token-based viewer authentication, enforce geo-restrictions.
+
+  **Request payload:**
+  ```json
+  {
+      "action":    "on_play",
+      "client_id": "h8k3m201",
+      "ip":        "203.0.113.5",
+      "vhost":     "__defaultVhost__",
+      "app":       "live",
+      "stream":    "livestream",
+      "param":     "?token=viewertoken"
+  }
+  ```
+</Accordion>
+
+<Accordion title="on_stop — viewer stops watching">
+  **Fired when:** a viewer disconnects.
+
+  **Validation:** notification only.
+
+  **Request payload:**
+  ```json
+  {
+      "action":    "on_stop",
+      "client_id": "h8k3m201",
+      "ip":        "203.0.113.5",
+      "vhost":     "__defaultVhost__",
+      "app":       "live",
+      "stream":    "livestream",
+      "param":     ""
+  }
+  ```
+</Accordion>
+
+<Accordion title="on_dvr — DVR file completed">
+  **Fired when:** a DVR segment or session file has been finalized and written to disk.
+
+  **Validation:** SRS checks the response code but a non-zero response does not affect DVR operation — this is primarily a notification hook.
+
+  **Use case:** trigger upload to object storage (S3, OSS), transcode for VoD, send completion notifications.
+
+  **Request payload:**
+  ```json
+  {
+      "action":    "on_dvr",
+      "client_id": "g3h2l910",
+      "ip":        "192.168.1.10",
+      "vhost":     "__defaultVhost__",
+      "app":       "live",
+      "stream":    "livestream",
+      "cwd":       "/usr/local/srs",
+      "file":      "./objs/nginx/html/live/livestream.1420254068776.flv"
+  }
+  ```
+</Accordion>
+
+<Accordion title="on_hls — HLS segment generated">
+  **Fired when:** a new `.ts` segment has been written and the M3U8 playlist has been updated.
+
+  **Validation:** notification only; does not affect HLS output.
+
+  **Use case:** CDN cache warming, analytics, segment synchronization.
+
+  **Request payload:**
+  ```json
+  {
+      "action":    "on_hls",
+      "client_id": "g3h2l910",
+      "ip":        "192.168.1.10",
+      "vhost":     "__defaultVhost__",
+      "app":       "live",
+      "stream":    "livestream",
+      "duration":  9.36,
+      "cwd":       "/usr/local/srs",
+      "file":      "./objs/nginx/html/live/livestream/2015-01-03/10.57.30.ts",
+      "url":       "live/livestream/2015-01-03/10.57.30.ts",
+      "m3u8":      "./objs/nginx/html/live/livestream.m3u8",
+      "m3u8_url":  "live/livestream.m3u8",
+      "seq_no":    100
+  }
+  ```
+</Accordion>
+
+<Accordion title="on_hls_notify — HLS segment fetch notification">
+  **Fired when:** a new HLS `.ts` segment is generated. Unlike `on_hls` (which POSTs JSON), `on_hls_notify` performs an HTTP **GET** request to the URL after substituting template variables.
+
+  **Validation:** notification only; errors are silently ignored.
+
+  **Use case:** CDN cache warming by fetching the segment URL proactively so it is cached before viewers request it.
+
+  **URL templating** — the following placeholders are substituted in the `on_hls_notify` URL:
+
+  | Placeholder    | Replaced with                         |
+  |----------------|---------------------------------------|
+  | `[server_id]`  | SRS server ID                         |
+  | `[service_id]` | SRS service ID                        |
+  | `[app]`        | Application name                      |
+  | `[stream]`     | Stream name                           |
+  | `[ts_url]`     | Full URL of the generated `.ts` file  |
+  | `[param]`      | RTMP query parameters                 |
+
+  **Example configuration:**
+  ```conf
+  http_hooks {
+      enabled         on;
+      on_hls_notify   http://cdn.example.com/[app]/[stream].m3u8;
+  }
+  ```
+</Accordion>
+
+---
+
+## Event Summary Table
+
+| Event            | Trigger                           | Can Deny? | Common Use                          |
+|------------------|-----------------------------------|-----------|-------------------------------------|
+| `on_connect`     | Client connects to vhost          | Yes       | Early-stage authentication          |
+| `on_close`       | Client disconnects from vhost     | No        | Cleanup, analytics                  |
+| `on_publish`     | Encoder starts pushing            | Yes       | Authenticate stream keys            |
+| `on_unpublish`   | Encoder stops pushing             | No        | Update stream status in database    |
+| `on_play`        | Viewer starts watching            | Yes       | Token-based viewer auth             |
+| `on_stop`        | Viewer stops watching             | No        | Session analytics                   |
+| `on_dvr`         | DVR file written to disk          | No        | Upload recording to cloud storage   |
+| `on_hls`         | HLS `.ts` segment generated       | No        | CDN cache warming (POST)            |
+| `on_hls_notify`  | HLS `.ts` segment generated       | No        | CDN cache warming (GET with URL substitution) |
+
+---
+
+## Response Format
+
+For validation hooks (`on_publish`, `on_play`), your server must respond with HTTP 200 and a JSON body:
+
+```json
+{ "code": 0 }
+```
+
+To **deny** the operation:
+
+```json
+{ "code": 1, "data": "unauthorized stream key" }
+```
+
+Any non-zero `code` causes SRS to reject the publisher or viewer. The `data` field is optional.
+
+<Warning>
+  Your callback server must respond within the SRS HTTP client timeout (default ~30 seconds). Slow responses will block the publisher or viewer from connecting. Keep your callback handler fast.
+</Warning>
+
+---
+
+## Authentication Example
+
+<Steps>
+  <Step title="Configure on_publish in SRS">
+    Add the callback URL to your vhost configuration:
+
+    ```conf
+    vhost __defaultVhost__ {
+        http_hooks {
+            enabled    on;
+            on_publish http://127.0.0.1:8085/api/v1/auth;
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Publisher sends stream key in query string">
+    The encoder publishes to:
+
+    ```
+    rtmp://your-server/live/mystream?token=secret123
+    ```
+
+    SRS includes the `param` field (`?token=secret123`) in the callback JSON.
+  </Step>
+
+  <Step title="Your server validates and responds">
+    ```json
+    // Allow
+    { "code": 0 }
+
+    // Deny
+    { "code": 403, "data": "invalid token" }
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Multiple Callback URLs
+
+Each event directive accepts multiple space-separated URLs. SRS calls them in sequence:
+
+```conf
+on_publish  http://primary.example.com/hooks http://backup.example.com/hooks;
+```
+
+<Note>
+  When multiple URLs are configured, SRS calls each one in sequence and stops at the **first** non-zero response code. If any server returns a non-zero code, the operation is denied and subsequent URLs are not called.
+</Note>

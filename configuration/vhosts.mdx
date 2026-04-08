@@ -1,0 +1,347 @@
+---
+title: "Virtual Hosts"
+description: "How SRS uses virtual hosts to namespace streams, route clients, and apply per-stream configuration for HLS, HTTP-FLV, WebRTC, DVR, and transcoding."
+---
+
+A virtual host (vhost) in SRS is a named namespace that controls how streams published to that host are handled. Every stream belongs to exactly one vhost, and all protocol features — HLS, HTTP-FLV, WebRTC, DVR, security, transcoding — are configured per vhost.
+
+## Default vhost
+
+SRS ships with a special vhost named `__defaultVhost__`. Any client that connects without a recognizable domain name (e.g., connecting by IP address) is routed to the default vhost.
+
+```conf
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+}
+```
+
+## How clients are routed to vhosts
+
+SRS matches a client to a vhost using the RTMP `tcUrl` hostname:
+
+| Client URL | Vhost matched |
+|---|---|
+| `rtmp://192.168.1.10/live/stream` | `__defaultVhost__` (IP address, no domain) |
+| `rtmp://video.example.com/live/stream` | `video.example.com` vhost |
+| `rtmp://staging.example.com/live/stream` | `staging.example.com` vhost |
+
+For HTTP-FLV and HLS, the `Host` header of the HTTP request is used in the same way.
+
+<Note>
+For domain-based vhosts to work, clients must connect using the domain name, not the server's IP address. DNS must resolve the domain to the SRS server.
+</Note>
+
+## Vhost config structure
+
+Every feature is a named sub-block inside the `vhost {}` block:
+
+```conf
+vhost example.com {
+    # Top-level vhost settings
+    min_latency off;
+    tcp_nodelay off;
+
+    # Per-feature blocks
+    play { }
+    publish { }
+    hls { }
+    http_remux { }
+    rtc { }
+    security { }
+    http_hooks { }
+    transcode { }
+    dvr { }
+    forward { }
+    exec { }
+}
+```
+
+## Multiple vhosts
+
+Define as many vhosts as needed. Each is fully independent.
+
+```conf
+# Production vhost with HLS and HTTP-FLV
+vhost live.example.com {
+    hls {
+        enabled         on;
+        hls_fragment    10;
+        hls_window      60;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+}
+
+# Low-latency vhost for WebRTC
+vhost rtc.example.com {
+    min_latency on;
+    rtc {
+        enabled     on;
+        rtmp_to_rtc on;
+        rtc_to_rtmp off;
+    }
+}
+
+# Fallback for IP-based access
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+    }
+}
+```
+
+## Full-featured vhost example
+
+The following vhost enables HLS, HTTP-FLV, and WebRTC simultaneously. This is equivalent to the default `srs.conf` configuration:
+
+```conf
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+    rtc {
+        enabled     on;
+        # Convert RTMP publish to WebRTC playback
+        rtmp_to_rtc off;
+        # Convert WebRTC publish to RTMP playback
+        rtc_to_rtmp off;
+    }
+
+    play {
+        gop_cache_max_frames 2500;
+    }
+}
+```
+
+## HLS configuration
+
+```conf
+vhost hls.example.com {
+    hls {
+        # Enable HLS output
+        enabled         on;
+
+        # Duration of each .ts segment in seconds
+        hls_fragment    10;
+
+        # Total playlist window in seconds (number of segments kept)
+        hls_window      60;
+
+        # Output directory for .m3u8 and .ts files
+        hls_path        ./objs/nginx/html;
+
+        # Playlist filename template
+        hls_m3u8_file   [app]/[stream].m3u8;
+
+        # Segment filename template
+        hls_ts_file     [app]/[stream]-[seq].ts;
+
+        # Recover sequence numbers after restart
+        hls_recover     on;
+
+        # Remove expired segments
+        hls_cleanup     on;
+    }
+}
+```
+
+Streams are available at:
+```
+http://<server>:8080/live/livestream.m3u8
+```
+
+## HTTP-FLV configuration
+
+```conf
+vhost flv.example.com {
+    http_remux {
+        enabled     on;
+        # Mount path: [vhost]/[app]/[stream].flv
+        mount       [vhost]/[app]/[stream].flv;
+    }
+}
+```
+
+Streams are available at:
+```
+http://<server>:8080/live/livestream.flv
+```
+
+## WebRTC configuration
+
+```conf
+vhost rtc.example.com {
+    # Enable low-latency mode (recommended for WebRTC)
+    min_latency on;
+
+    play {
+        # Disable merged-write for real-time delivery
+        mw_latency 0;
+        mw_msgs 0;
+    }
+
+    rtc {
+        enabled     on;
+
+        # Convert RTMP publisher to WebRTC players
+        rtmp_to_rtc on;
+
+        # Convert WebRTC publisher to RTMP players
+        rtc_to_rtmp off;
+
+        # NACK retransmission support
+        nack on;
+
+        # TWCC bandwidth estimation
+        twcc on;
+
+        # DTLS role (passive = server waits for client to initiate)
+        dtls_role passive;
+
+        # Session timeout in seconds
+        stun_timeout 30;
+    }
+}
+```
+
+## DVR (recording) configuration
+
+```conf
+vhost dvr.example.com {
+    dvr {
+        enabled         on;
+
+        # Record all streams in all apps
+        dvr_apply       all;
+
+        # session: one file per publish session
+        # segment: split into fixed-duration files
+        dvr_plan        session;
+
+        # Output path with timestamp variable
+        dvr_path        ./objs/nginx/html/[app]/[stream].[timestamp].flv;
+
+        # For segment plan: segment duration in seconds
+        dvr_duration    30;
+    }
+}
+```
+
+## Transcoding configuration
+
+```conf
+vhost transcode.example.com {
+    transcode {
+        enabled     on;
+        ffmpeg      ./objs/ffmpeg/bin/ffmpeg;
+
+        engine hd {
+            enabled         on;
+            vcodec          libx264;
+            vbitrate        1500;
+            vfps            25;
+            vwidth          1280;
+            vheight         720;
+            acodec          libfdk_aac;
+            abitrate        128;
+            output          rtmp://127.0.0.1:[port]/[app]/[stream]_[engine]?vhost=[vhost];
+        }
+    }
+}
+```
+
+See [Transcoding](/configuration/transcoding) for the full reference.
+
+## Play and publish settings
+
+Fine-tune buffering and latency behavior per vhost:
+
+```conf
+vhost latency.example.com {
+    # Disable GOP cache for lowest latency (clients must wait for next keyframe)
+    # Enable for fast startup (default: on)
+    play {
+        gop_cache               off;
+        gop_cache_max_frames    2500;
+
+        # Live queue depth in seconds; old GOPs are dropped when exceeded
+        queue_length            10;
+
+        # Timestamp correction algorithm: full, zero, or off
+        time_jitter             full;
+
+        # Merged-write latency in ms (lower = more real-time, higher CPU)
+        mw_latency              350;
+    }
+
+    publish {
+        # First-packet timeout for encoder connection
+        firstpkt_timeout    20000;
+
+        # Subsequent packet timeout
+        normal_timeout      5000;
+
+        # Parse SPS/PPS to detect video resolution
+        parse_sps           on;
+    }
+}
+```
+
+## Using include for shared vhost configs
+
+Extract shared vhost config into a separate file:
+
+```conf
+# conf/srs.conf
+max_connections     1000;
+daemon              off;
+rtmp {
+    listen 1935;
+}
+http_api {
+    enabled on;
+    listen  1985;
+}
+http_server {
+    enabled on;
+    listen  8080;
+    dir     ./objs/nginx/html;
+}
+
+include ./conf/vhosts.conf;
+```
+
+```conf
+# conf/vhosts.conf
+vhost live.example.com {
+    hls {
+        enabled on;
+    }
+    http_remux {
+        enabled on;
+        mount   [vhost]/[app]/[stream].flv;
+    }
+}
+```
+
+## Further reading
+
+- [Configuration Overview](/configuration/overview) — config file format, environment variables, hot reload
+- [Security](/configuration/security) — IP allow/deny, token auth, RTMPS, HTTPS
+- [Transcoding](/configuration/transcoding) — FFmpeg-based transcoding per vhost
+- [HLS](/protocols/hls) — HLS protocol details
+- [HTTP-FLV](/protocols/http-flv) — HTTP-FLV protocol details
+- [WebRTC](/protocols/webrtc) — WebRTC configuration details
+- [DVR](/advanced/dvr) — DVR recording details

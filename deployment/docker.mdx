@@ -1,0 +1,333 @@
+---
+title: "Docker deployment"
+description: "Run SRS in Docker with support for RTMP, WebRTC, HLS, HTTP-FLV, and SRT protocols."
+keywords: ["docker", "container", "deployment", "SRS", "streaming server"]
+---
+
+The official SRS Docker image is `ossrs/srs` on Docker Hub. It is a multi-architecture image supporting `linux/amd64`, `linux/arm64`, and `linux/arm/v7`.
+
+## Port reference
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| `1935` | TCP | RTMP live streaming |
+| `1985` | TCP | HTTP API |
+| `8080` | TCP | HTTP streaming (HLS, HTTP-FLV, console) |
+| `8000` | UDP | WebRTC media (RTP/RTCP) |
+| `10080` | UDP | SRT streaming |
+
+## Quick start
+
+<Steps>
+  <Step title="Pull the image">
+    Pull from Docker Hub, or use the China mirror if you are in mainland China.
+
+    <CodeGroup>
+      ```bash Docker Hub
+      docker pull ossrs/srs:latest
+      ```
+
+      ```bash China mirror
+      docker pull registry.cn-hangzhou.aliyuncs.com/ossrs/srs:latest
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Run SRS">
+    Start SRS with all ports exposed:
+
+    ```bash
+    docker run --rm -it \
+      -p 1935:1935 \
+      -p 1985:1985 \
+      -p 8080:8080 \
+      -p 8000:8000/udp \
+      -p 10080:10080/udp \
+      ossrs/srs:latest
+    ```
+
+    The container runs SRS in the foreground (`daemon off`) and logs to stdout by default.
+  </Step>
+
+  <Step title="Verify the server is running">
+    Check the HTTP API to confirm SRS started successfully:
+
+    ```bash
+    curl http://localhost:1985/api/v1/versions
+    ```
+
+    A successful response returns the SRS version in JSON format.
+  </Step>
+</Steps>
+
+## Configuration
+
+### Environment variables
+
+Every SRS config key is available as an environment variable with the prefix `SRS_`. For example, `listen` becomes `SRS_LISTEN` and `srs_log_level` becomes `SRS_LOG_LEVEL`.
+
+The Docker image sets these environment variables by default:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SRS_DAEMON` | `off` | Runs SRS in the foreground so Docker can manage the process. |
+| `SRS_IN_DOCKER` | `on` | Tells SRS it is running inside Docker, enabling container-specific defaults. |
+| `SRS_LISTEN` | `1935` | RTMP listen port. |
+| `SRS_LOG_LEVEL` | `trace` | Log verbosity. Options: `verbose`, `info`, `trace`, `warn`, `error`. |
+
+Pass environment variables with `-e`:
+
+```bash
+docker run --rm -it \
+  -p 1935:1935 -p 1985:1985 -p 8080:8080 \
+  -p 8000:8000/udp -p 10080:10080/udp \
+  -e SRS_LOG_LEVEL=warn \
+  ossrs/srs:latest
+```
+
+<Note>
+  When `SRS_IN_DOCKER=on`, SRS automatically disables the daemon and enables config auto-reload via inotify. Docker manages the process lifecycle and log collection.
+</Note>
+
+### Default docker.conf
+
+The image ships with `conf/docker.conf` as its default configuration. This config enables RTMP, HTTP API, HTTP streaming, WebRTC, HLS, and HTTP-FLV:
+
+```conf
+# docker config for srs.
+# @see full.conf for detail config.
+
+max_connections     1000;
+# For docker, please use docker logs to manage the logs of SRS.
+# See https://docs.docker.com/config/containers/logging/
+srs_log_tank        console;
+daemon              off;
+rtmp {
+    listen              1935;
+}
+http_api {
+    enabled         on;
+    listen          1985;
+}
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+rtc_server {
+    enabled on;
+    listen 8000;
+    # @see https://ossrs.io/lts/en-us/docs/v7/doc/webrtc#config-candidate
+    candidate $CANDIDATE;
+}
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+    rtc {
+        enabled     on;
+        rtmp_to_rtc on;
+        rtc_to_rtmp on;
+    }
+}
+```
+
+### Mounting a custom config
+
+To use your own configuration file, mount it over the default path:
+
+```bash
+docker run --rm -it \
+  -p 1935:1935 -p 1985:1985 -p 8080:8080 \
+  -p 8000:8000/udp -p 10080:10080/udp \
+  -v /path/to/srs.conf:/usr/local/srs/conf/srs.conf \
+  ossrs/srs:latest ./objs/srs -c conf/srs.conf
+```
+
+<Tip>
+  Combine environment variables with a mounted config file. Environment variables override the values set in the config file, so you can use a shared base config and tweak per-deployment settings via env vars.
+</Tip>
+
+## WebRTC with Docker
+
+WebRTC requires SRS to advertise a public IP address as the ICE candidate so clients can reach the media port over UDP. Set the `CANDIDATE` environment variable to your host's public IP or hostname:
+
+```bash
+docker run --rm -it \
+  -p 1935:1935 -p 1985:1985 -p 8080:8080 \
+  -p 8000:8000/udp \
+  -e CANDIDATE=192.0.2.10 \
+  ossrs/srs:latest
+```
+
+The default `docker.conf` substitutes `$CANDIDATE` directly into the `rtc_server.candidate` directive.
+
+<Warning>
+  If `CANDIDATE` is not set or resolves to `127.0.0.1`, WebRTC will work only from the same machine. Always set `CANDIDATE` to the externally reachable IP when running SRS for remote clients.
+</Warning>
+
+To resolve the candidate automatically from the host's network interface at startup, you can use a shell substitution:
+
+```bash
+CANDIDATE=$(ip route get 1 | awk '{print $NF; exit}')
+docker run --rm -it \
+  -p 1935:1935 -p 1985:1985 -p 8080:8080 \
+  -p 8000:8000/udp \
+  -e CANDIDATE=$CANDIDATE \
+  ossrs/srs:latest
+```
+
+## HTTPS with Docker
+
+SRS can serve HTTPS for both the HTTP API and HTTP streaming. The `https.docker.conf` configuration file enables TLS on dedicated ports alongside the plain HTTP ports:
+
+```conf
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+
+rtmp {
+    listen              1935;
+}
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+    https {
+        enabled on;
+        listen 8088;
+        key ./conf/server.key;
+        cert ./conf/server.crt;
+    }
+}
+
+http_api {
+    enabled         on;
+    listen          1985;
+    https {
+        enabled on;
+        listen 1990;
+        key ./conf/server.key;
+        cert ./conf/server.crt;
+    }
+}
+
+rtc_server {
+    enabled         on;
+    listen 8000;
+    candidate       $CANDIDATE;
+}
+
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+    rtc {
+        enabled     on;
+        rtmp_to_rtc off;
+        rtc_to_rtmp off;
+    }
+}
+```
+
+Mount your TLS certificate files and expose the HTTPS ports:
+
+```bash
+docker run --rm -it \
+  -p 1935:1935 -p 1985:1985 -p 8080:8080 \
+  -p 1990:1990 -p 8088:8088 \
+  -p 8000:8000/udp \
+  -e CANDIDATE=192.0.2.10 \
+  -v /path/to/server.key:/usr/local/srs/conf/server.key \
+  -v /path/to/server.crt:/usr/local/srs/conf/server.crt \
+  -v /path/to/https.docker.conf:/usr/local/srs/conf/srs.conf \
+  ossrs/srs:latest ./objs/srs -c conf/srs.conf
+```
+
+## Docker Compose
+
+Use Docker Compose to manage SRS alongside other services or to codify your deployment configuration:
+
+```yaml docker-compose.yml
+services:
+  srs:
+    image: ossrs/srs:latest
+    restart: unless-stopped
+    ports:
+      - "1935:1935"
+      - "1985:1985"
+      - "8080:8080"
+      - "8000:8000/udp"
+      - "10080:10080/udp"
+    environment:
+      - CANDIDATE=192.0.2.10
+      - SRS_LOG_LEVEL=warn
+    volumes:
+      - ./conf/srs.conf:/usr/local/srs/conf/srs.conf
+    command: ./objs/srs -c conf/srs.conf
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1985/api/v1/versions"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+```
+
+Start the stack:
+
+```bash
+docker compose up -d
+docker compose logs -f srs
+```
+
+## Multi-architecture support
+
+The `ossrs/srs` image is built for three architectures:
+
+| Platform | Architecture |
+|----------|-------------|
+| `linux/amd64` | x86-64 servers and desktops |
+| `linux/arm64` | ARM64 servers (AWS Graviton, Apple Silicon in VMs) |
+| `linux/arm/v7` | 32-bit ARM devices (Raspberry Pi 2/3) |
+
+Docker automatically pulls the correct variant for your platform. To explicitly target a platform:
+
+```bash
+docker run --platform linux/arm64 --rm -it \
+  -p 1935:1935 -p 1985:1985 -p 8080:8080 \
+  ossrs/srs:latest
+```
+
+## Health check
+
+The HTTP API endpoint `/api/v1/versions` is the standard health check target. It returns a `200 OK` response with the server version when SRS is running:
+
+```bash
+curl http://localhost:1985/api/v1/versions
+```
+
+Example response:
+
+```json
+{
+  "code": 0,
+  "server": "vid-k0e7xg7",
+  "data": {
+    "major": 6,
+    "minor": 0,
+    "revision": 12,
+    "version": "6.0.12"
+  }
+}
+```
+
+Use this endpoint for Docker `HEALTHCHECK`, load balancer probes, and monitoring systems. See [Server stats](/api/server-stats) for more API endpoints.

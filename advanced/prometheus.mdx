@@ -1,0 +1,216 @@
+---
+title: "Prometheus Metrics"
+description: "Export SRS server metrics in Prometheus format for monitoring, alerting, and Grafana dashboards."
+---
+
+SRS exposes a built-in Prometheus exporter that publishes metrics about server health, streams, connections, and resource usage. The exporter serves the standard `/metrics` endpoint that Prometheus can scrape directly.
+
+---
+
+## Configuration
+
+Add an `exporter` block to your SRS configuration to enable the Prometheus endpoint:
+
+```conf
+# prometheus.conf
+
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+
+rtmp {
+    listen              1935;
+}
+http_api {
+    enabled         on;
+    listen          1985;
+}
+http_server {
+    enabled         on;
+    listen          8080;
+}
+rtc_server {
+    enabled on;
+    listen 8000; # UDP port
+    candidate $CANDIDATE;
+}
+
+# Prometheus exporter config.
+exporter {
+    enabled         on;
+    listen          9972;
+    label           cn-beijing;
+    tag             cn-edge;
+}
+
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+    rtc {
+        enabled     on;
+        rtmp_to_rtc on;
+        rtc_to_rtmp on;
+    }
+}
+```
+
+### Exporter directives
+
+| Directive | Default     | Description                                                             |
+|-----------|-------------|-------------------------------------------------------------------------|
+| `enabled` | `off`       | Enable or disable the Prometheus exporter.                              |
+| `listen`  | `9972`      | TCP port for the `/metrics` HTTP endpoint.                              |
+| `label`   | _(empty)_   | A static label added to all metrics (e.g. datacenter or region name).   |
+| `tag`     | _(empty)_   | A static tag added to all metrics (e.g. server role like `cn-edge`).    |
+
+---
+
+## Metrics Endpoint
+
+Once enabled, metrics are available at:
+
+```
+http://<server>:9972/metrics
+```
+
+Example output (Prometheus text format):
+
+```
+# HELP srs_server_info SRS server information
+# TYPE srs_server_info gauge
+srs_server_info{label="cn-beijing",tag="cn-edge",version="6.0.0"} 1
+
+# HELP srs_clients_total Total number of connected clients
+# TYPE srs_clients_total gauge
+srs_clients_total{label="cn-beijing",tag="cn-edge"} 42
+
+# HELP srs_streams_total Total number of active streams
+# TYPE srs_streams_total gauge
+srs_streams_total{label="cn-beijing",tag="cn-edge"} 5
+
+# HELP srs_receive_bytes_total Total bytes received
+# TYPE srs_receive_bytes_total counter
+srs_receive_bytes_total{label="cn-beijing",tag="cn-edge"} 1048576000
+
+# HELP srs_send_bytes_total Total bytes sent
+# TYPE srs_send_bytes_total counter
+srs_send_bytes_total{label="cn-beijing",tag="cn-edge"} 5368709120
+```
+
+---
+
+## Metric Categories
+
+| Category   | Metrics included                                                              |
+|------------|-------------------------------------------------------------------------------|
+| **Server** | Version, uptime, CPU usage, memory usage, system load                         |
+| **Network**| Bytes received, bytes sent, bitrate in/out                                    |
+| **Clients**| Total connected clients, publishers, players                                  |
+| **Streams**| Active stream count, per-stream bitrate, per-stream client count              |
+| **Vhosts** | Per-vhost stream and client counts                                            |
+
+---
+
+## Prometheus Scrape Configuration
+
+Add SRS as a scrape target in your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: 'srs'
+    static_configs:
+      - targets: ['your-srs-host:9972']
+    scrape_interval: 15s
+    metrics_path: /metrics
+```
+
+For multiple SRS instances with different labels:
+
+```yaml
+scrape_configs:
+  - job_name: 'srs-cluster'
+    static_configs:
+      - targets:
+          - 'srs-origin-1:9972'
+          - 'srs-origin-2:9972'
+          - 'srs-edge-us:9972'
+          - 'srs-edge-eu:9972'
+    scrape_interval: 15s
+    metrics_path: /metrics
+```
+
+<Tip>
+  Use the `label` and `tag` directives to identify each SRS instance in a multi-server deployment. These values appear as metric labels in every exported metric, making it easy to filter by region, role, or datacenter in Prometheus queries and Grafana panels.
+</Tip>
+
+---
+
+## System Stats Configuration
+
+The `stats` block controls which system-level metrics SRS collects internally (used for CPU, memory, and network reporting):
+
+```conf
+stats {
+    # Index of the network interface to report (0 = first interface, e.g. eth0)
+    network 0;
+    # Disk device names to track I/O stats
+    disk sda sdb xvda xvdb;
+}
+```
+
+| Directive | Description                                                               |
+|-----------|---------------------------------------------------------------------------|
+| `network` | Index of the network interface to report (check `/proc/net/dev` order).   |
+| `disk`    | Space-separated list of block device names to track disk I/O statistics.  |
+
+---
+
+## Grafana Integration
+
+<Steps>
+  <Step title="Add Prometheus as a data source in Grafana">
+    In Grafana, go to **Configuration → Data Sources → Add data source**, select **Prometheus**, and set the URL to your Prometheus server (e.g. `http://prometheus:9090`).
+  </Step>
+
+  <Step title="Import the SRS dashboard">
+    The SRS community provides pre-built Grafana dashboards. Search for "SRS" in the [Grafana dashboard library](https://grafana.com/grafana/dashboards/) or import a dashboard JSON that queries the `srs_*` metric namespace.
+  </Step>
+
+  <Step title="Build custom panels">
+    Use PromQL to query SRS metrics. Example queries:
+
+    ```promql
+    # Active streams
+    srs_streams_total
+
+    # Total outbound bitrate (bits per second) across all instances
+    rate(srs_send_bytes_total[1m]) * 8
+
+    # Clients per SRS instance (using label tag)
+    srs_clients_total
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Enabling Stats for the HTTP API
+
+The same system statistics are also accessible via the SRS HTTP API at `/api/v1/summaries`. Enabling `stats` in your config populates this endpoint:
+
+```conf
+stats {
+    network 0;
+}
+```
+
+```bash
+curl http://127.0.0.1:1985/api/v1/summaries
+```
+
+See [Server Stats API](/api/server-stats) for the full API reference.

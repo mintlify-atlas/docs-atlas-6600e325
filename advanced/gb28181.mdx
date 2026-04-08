@@ -1,0 +1,207 @@
+---
+title: "GB28181"
+description: "Ingest video streams from IP cameras and NVRs using the Chinese GB28181 national standard, and convert them to RTMP, HLS, or WebRTC for playback."
+---
+
+GB28181 (GB/T 28181) is a Chinese national standard that defines how IP cameras, NVRs, and video management systems communicate over SIP and RTP. SRS implements a GB28181 SIP server and RTP receiver, allowing you to pull streams from compliant devices and re-publish them as standard RTMP streams — which can then be played back as HLS, HTTP-FLV, or WebRTC.
+
+<Note>
+  GB28181 is primarily used in security and surveillance camera systems. Cameras register with SRS using SIP, and SRS then invites them to send an RTP/PS (MPEG Program Stream) media stream.
+</Note>
+
+---
+
+## How It Works
+
+```
+IP Camera / NVR
+      │
+      │  SIP REGISTER (TCP/UDP 5060 or custom)
+      ▼
+SRS GB28181 SIP Server
+      │
+      │  SIP INVITE (SRS invites device to stream)
+      ▼
+RTP Media (PS/H.264 over UDP/TCP, port 9000)
+      │
+      │  Demux PS → H.264 + AAC
+      ▼
+RTMP stream → rtmp://127.0.0.1/live/[stream]
+      │
+      ├── HTTP-FLV  → http://server:8080/live/[stream].flv
+      ├── HLS       → http://server:8080/live/[stream].m3u8
+      └── WebRTC    → webrtc://server/live/[stream]
+```
+
+1. The camera registers with SRS's SIP server.
+2. SRS (or your application via the HTTP API) sends a SIP INVITE to the device.
+3. The device starts sending an RTP stream containing a MPEG-PS (Program Stream) payload.
+4. SRS demultiplexes the PS container, extracts H.264 video and AAC audio, and re-publishes as an RTMP stream.
+5. Viewers consume the stream via any supported protocol.
+
+---
+
+## Configuration
+
+```conf
+# gb28181.conf
+
+max_connections 1000;
+daemon off;
+srs_log_tank console;
+
+rtmp {
+    listen 1935;
+}
+
+stream_caster {
+    enabled on;
+    caster  gb28181;
+    output  rtmp://127.0.0.1/live/[stream];
+    listen  9000;
+}
+
+http_server {
+    enabled on;
+    listen  8080;
+    dir     ./objs/nginx/html;
+}
+
+http_api {
+    enabled on;
+    listen  1985;
+}
+
+stats {
+    network 0;
+}
+
+rtc_server {
+    enabled   on;
+    listen    8000; # UDP port
+    candidate $CANDIDATE;
+}
+
+vhost __defaultVhost__ {
+    rtc {
+        enabled     on;
+        rtmp_to_rtc on;
+        rtc_to_rtmp on;
+    }
+    http_remux {
+        enabled on;
+        mount   [vhost]/[app]/[stream].flv;
+    }
+    hls {
+        enabled on;
+    }
+}
+```
+
+### Key directives
+
+| Directive              | Description                                                                 |
+|------------------------|-----------------------------------------------------------------------------|
+| `caster gb28181`       | Enable the GB28181 stream caster.                                           |
+| `output rtmp://...`    | The RTMP URL where received streams are re-published. `[stream]` is the device channel/stream ID. |
+| `listen 9000`          | UDP/TCP port for receiving RTP media packets from cameras.                  |
+
+---
+
+## Port Reference
+
+| Protocol       | Port   | Description                                        |
+|----------------|--------|----------------------------------------------------|
+| SIP (TCP/UDP)  | 5060*  | Standard SIP port for device registration/signaling |
+| RTP media      | 9000   | Configured via `listen` in `stream_caster`          |
+| RTMP           | 1935   | Re-published stream output                          |
+| HTTP-FLV / HLS | 8080   | Viewer playback                                    |
+| HTTP API       | 1985   | SRS management API                                 |
+| WebRTC (UDP)   | 8000   | WebRTC viewer access                               |
+
+<Note>
+  The `stream_caster` `listen` port (default `9000`) is the RTP media port. The SIP registration port is handled differently; check your SRS build configuration for the SIP listener — devices are typically configured to point to port 5060 on the SRS host.
+</Note>
+
+---
+
+## Device Registration Flow
+
+<Steps>
+  <Step title="Configure camera to register with SRS">
+    In your camera or NVR's SIP settings, set:
+    - **SIP Server IP**: the IP address of your SRS host
+    - **SIP Server Port**: the SIP port (typically 5060)
+    - **Device ID**: a GB28181-compliant device identifier (20-digit code)
+    - **Domain**: match your SRS SIP domain configuration
+  </Step>
+
+  <Step title="Start SRS with GB28181 config">
+    ```bash
+    ./objs/srs -c conf/gb28181.conf
+    ```
+
+    Once running, SRS listens for SIP REGISTER messages from devices.
+  </Step>
+
+  <Step title="Camera registers automatically">
+    Compliant cameras send a SIP REGISTER on startup and re-register periodically. You can verify registration via the SRS HTTP API:
+
+    ```bash
+    curl http://127.0.0.1:1985/api/v1/gb28181/summary
+    ```
+  </Step>
+
+  <Step title="Invite device to start streaming">
+    Use the SRS HTTP API to send a SIP INVITE to the registered device:
+
+    ```bash
+    curl -X POST http://127.0.0.1:1985/api/v1/gb28181/invite \
+      -H 'Content-Type: application/json' \
+      -d '{"id": "34020000001320000001", "channel": "34020000001320000001"}'
+    ```
+
+    SRS sends a SIP INVITE to the camera, which responds by streaming RTP media to port 9000.
+  </Step>
+
+  <Step title="View the stream">
+    Once invited, the stream is available at:
+
+    ```
+    # RTMP
+    rtmp://your-server/live/34020000001320000001
+
+    # HTTP-FLV
+    http://your-server:8080/live/34020000001320000001.flv
+
+    # HLS
+    http://your-server:8080/live/34020000001320000001.m3u8
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Playback Protocol Conversion
+
+The `stream_caster` converts the GB28181 RTP/PS stream into a standard RTMP stream. From there, SRS's normal vhost configuration applies:
+
+| Output Protocol | Enable in vhost              | Playback URL                                          |
+|-----------------|------------------------------|-------------------------------------------------------|
+| RTMP            | Always available             | `rtmp://server/live/[stream]`                         |
+| HTTP-FLV        | `http_remux { enabled on; }` | `http://server:8080/live/[stream].flv`               |
+| HLS             | `hls { enabled on; }`        | `http://server:8080/live/[stream].m3u8`              |
+| WebRTC          | `rtc { rtmp_to_rtc on; }`    | `webrtc://server/live/[stream]`                       |
+
+---
+
+## Troubleshooting
+
+<Warning>
+  GB28181 cameras often use non-standard PS container variants or proprietary codec extensions. If a stream is ingested but produces no video, check SRS logs for PS demux errors. Some cameras require specific RTP payload type settings.
+</Warning>
+
+- **Camera not registering**: verify the SIP server IP/port in camera settings and check firewall rules for the SIP port.
+- **No video after INVITE**: confirm the RTP port (9000) is open for both TCP and UDP inbound traffic.
+- **Audio missing**: many GB28181 cameras send G.711 audio; SRS will attempt to transcode or pass through based on configuration.
+- **`$CANDIDATE` not set**: for WebRTC playback, set the `candidate` to your server's public IP address or use the environment variable `CANDIDATE=<ip>`.

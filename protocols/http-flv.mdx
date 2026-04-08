@@ -1,0 +1,251 @@
+---
+title: "HTTP-FLV"
+description: "Low-latency FLV streaming over HTTP for web players"
+---
+
+HTTP-FLV is a live streaming protocol that wraps an FLV (Flash Video) byte stream inside an HTTP response with `Transfer-Encoding: chunked`. SRS supports HTTP-FLV via the `http_remux` module, which remuxes an RTMP stream in real time into an HTTP-FLV stream — no additional processing or file writing needed.
+
+## How HTTP-FLV Works in SRS
+
+```
+Publisher ──RTMP──▶ SRS ──http_remux──▶ HTTP-FLV (port 8080)
+                                         Players (flv.js, mpv, ffplay)
+```
+
+The stream is never written to disk. SRS pipes RTMP data directly into the HTTP response stream for each connected player. This results in latency nearly identical to RTMP (typically 1–3 seconds), while being accessible through HTTP — making it CDN-friendly and firewall-traversal-compatible.
+
+## Advantages over RTMP
+
+| Feature | RTMP | HTTP-FLV |
+|---------|------|----------|
+| Protocol | TCP port 1935 | HTTP port 80/8080 |
+| Firewall/CDN compatible | Limited | Yes |
+| Latency | ~1–3 s | ~1–3 s |
+| Browser support | Requires plugin | Via flv.js (MSE) |
+| TLS/HTTPS | Needs RTMPS | Standard HTTPS |
+
+## Configuration
+
+### Basic HTTP-FLV
+
+```conf
+# http.flv.live.conf
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+
+rtmp {
+    listen              1935;
+}
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+
+vhost __defaultVhost__ {
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+}
+```
+
+### Full http_remux options
+
+```conf
+vhost http.remux.srs.com {
+    http_remux {
+        # Enable HTTP-FLV remux for this vhost
+        enabled         on;
+
+        # Audio buffer for fast start on mobile (ms), 0 = disabled
+        fast_cache      30;
+
+        # Mount path template for the FLV stream URL
+        # Variables: [vhost], [app], [stream]
+        # Extensions: .flv, .ts, .mp3, .aac
+        mount           [vhost]/[app]/[stream].flv;
+
+        # Drop packets if stream metadata says track is absent
+        drop_if_not_match   on;
+
+        # Default metadata flags (used for FLV header)
+        has_audio       on;
+        has_video       on;
+
+        # Guess audio/video presence from GOP cache and sequence headers
+        guess_has_av    on;
+    }
+}
+```
+
+### Key configuration options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `off` | Enable HTTP remux for this vhost |
+| `mount` | `[vhost]/[app]/[stream].flv` | URL path template for the stream |
+| `fast_cache` | `0` | Buffer audio (ms) for fast mobile start |
+| `drop_if_not_match` | `on` | Drop packets when FLV header flags say absent |
+| `has_audio` | `on` | Default: stream has audio |
+| `has_video` | `on` | Default: stream has video |
+| `guess_has_av` | `on` | Auto-detect audio/video from GOP cache |
+
+### Other stream formats
+
+The `mount` extension controls the output format:
+
+| Extension | Format | Notes |
+|-----------|--------|-------|
+| `.flv` | FLV | Default, supports A+V |
+| `.ts` | MPEG-TS | MPEG-TS over HTTP |
+| `.mp3` | MP3 audio | Audio-only, requires MP3 codec |
+| `.aac` | AAC audio | Audio-only, requires AAC codec |
+
+## URL Format
+
+```
+http://<server>:<port>/<app>/<stream>.flv
+```
+
+**Examples:**
+
+```
+http://192.168.1.100:8080/live/livestream.flv
+http://your-domain.com:8080/live/event.flv
+```
+
+When the `mount` path includes `[vhost]`, the URL becomes:
+
+```
+http://192.168.1.100:8080/__defaultVhost__/live/livestream.flv
+```
+
+<Note>
+  To use a cleaner URL without the vhost prefix, set `mount` to `/[app]/[stream].flv` (omit `[vhost]`).
+</Note>
+
+## Setup
+
+<Steps>
+  <Step title="Start SRS">
+    ```bash
+    ./objs/srs -c conf/http.flv.live.conf
+    ```
+  </Step>
+  <Step title="Publish via RTMP">
+    ```bash
+    ffmpeg -re -i input.mp4 \
+      -c:v libx264 -c:a aac \
+      -f flv rtmp://localhost/live/livestream
+    ```
+  </Step>
+  <Step title="Play the HTTP-FLV stream">
+    <Tabs>
+      <Tab title="ffplay">
+        ```bash
+        ffplay http://localhost:8080/live/livestream.flv
+        ```
+      </Tab>
+      <Tab title="mpv">
+        ```bash
+        mpv http://localhost:8080/live/livestream.flv
+        ```
+      </Tab>
+      <Tab title="flv.js (Browser)">
+        [flv.js](https://github.com/nicegay/flv.js) plays HTTP-FLV in browsers using MSE:
+
+        ```html
+        <script src="https://cdn.jsdelivr.net/npm/flv.js@latest/dist/flv.min.js"></script>
+        <video id="videoElement" controls></video>
+        <script>
+          if (flvjs.isSupported()) {
+            const videoElement = document.getElementById('videoElement');
+            const player = flvjs.createPlayer({
+              type: 'flv',
+              url: 'http://localhost:8080/live/livestream.flv',
+              isLive: true,
+            });
+            player.attachMediaElement(videoElement);
+            player.load();
+            player.play();
+          }
+        </script>
+        ```
+      </Tab>
+      <Tab title="VLC">
+        ```
+        vlc http://localhost:8080/live/livestream.flv
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+## Serving over HTTPS
+
+HTTP-FLV can be served over HTTPS using SRS's built-in TLS or a reverse proxy. With built-in TLS:
+
+```conf
+http_server {
+    enabled     on;
+    listen      8080;
+    dir         ./objs/nginx/html;
+
+    https {
+        enabled on;
+        listen  8088;
+        key     ./conf/server.key;
+        cert    ./conf/server.crt;
+    }
+}
+```
+
+The HTTPS stream URL becomes:
+
+```
+https://your-domain.com:8088/live/livestream.flv
+```
+
+<Warning>
+  For production, use Nginx or Caddy as a reverse proxy to handle TLS termination. SRS's built-in HTTPS is intended for development and testing only.
+</Warning>
+
+## Combining HTTP-FLV with WebRTC
+
+You can enable both HTTP-FLV and WebRTC simultaneously for the same stream, giving players a choice based on their capabilities:
+
+```conf
+vhost __defaultVhost__ {
+    rtc {
+        enabled     on;
+        rtmp_to_rtc on;
+    }
+
+    http_remux {
+        enabled on;
+        mount   [vhost]/[app]/[stream].flv;
+    }
+}
+```
+
+- WebRTC players get sub-second latency via `http://localhost:1985/rtc/v1/play/`
+- HTTP-FLV players get 1–3 second latency via `http://localhost:8080/live/stream.flv`
+- RTMP players connect directly to `rtmp://localhost/live/stream`
+
+<CardGroup cols={2}>
+  <Card title="RTMP" href="/protocols/rtmp">
+    Ingest streams via RTMP
+  </Card>
+  <Card title="WebRTC" href="/protocols/webrtc">
+    Sub-second latency with WebRTC
+  </Card>
+  <Card title="HLS" href="/protocols/hls">
+    Deliver to any HLS-compatible device
+  </Card>
+  <Card title="Vhosts" href="/configuration/vhosts">
+    Manage multiple streams with vhosts
+  </Card>
+</CardGroup>

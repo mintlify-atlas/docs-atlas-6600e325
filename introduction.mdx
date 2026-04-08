@@ -1,0 +1,112 @@
+---
+title: 'Introduction'
+description: 'SRS (Simple Realtime Server) is a simple, high-efficiency, real-time video server supporting a wide range of streaming protocols and codecs.'
+keywords: ['srs', 'simple realtime server', 'rtmp', 'webrtc', 'hls', 'streaming']
+---
+
+## What is SRS?
+
+SRS (Simple Realtime Server) is an open-source, high-efficiency real-time video server designed for live streaming and real-time communication. It accepts media from encoders and broadcasters, then distributes it to viewers through multiple protocols simultaneously.
+
+SRS solves the core problem of running a production-grade streaming origin server without complexity. A single SRS instance can ingest RTMP from OBS or FFmpeg and immediately serve that stream as RTMP, HLS, HTTP-FLV, WebRTC, SRT, or MPEG-DASH — all from one process, with no separate transcoders or packagers required.
+
+SRS is licensed under [MIT](https://github.com/ossrs/srs/blob/develop/LICENSE).
+
+## Architecture
+
+The diagram below shows the stream flow through a single SRS node. Media enters from the left (encoders, media sources, WebRTC clients) and exits on the right as one or more output formats.
+
+```
++----------+             +----------+
+| Upstream |             |  Deliver |
++---|------+             +----|-----+
++---+------------------+------+---------------------+----------------+
+|     Input            | SRS (Simple Realtime Server)|    Output     |
++----------------------+----------------------------+----------------+
+|                      |   +-> DASH ----------------+-> DASH player  |
+|    Encoder           |   +-> RTMP/HDS  -----------+-> Flash player |
+|  (FMLE, OBS,  --RTMP-+->-+-> HLS/HTTP ------------+-> M3U8 player  |
+|  FFmpeg, XSPLIT,     |   +-> FLV/MP3/AAC/TS ------+-> HTTP player  |
+|  ...)                |   +-> Forwarder -----------+-> RTMP server  |
+|                      |   +-> Transcoder ----------+-> RTMP server  |
+|                      |   +-> EXEC ----------------+-> External app |
+|                      |   +-> DVR -----------------+-> FLV file     |
+|                      |   +-> WebRTC --------------+-> WebRTC client|
++----------------------+                            |                |
+|    WebRTC Client     |   +--> RTMP                |                |
+| (H5, Native...) -RTC-+---+---> WebRTC ------------+-> WebRTC client|
++----------------------+                            |                |
+|  Media Source        |                            |                |
+|  (RTSP, FILE,        |                            |                |
+|   HTTP, HLS,  --pull-+->-- Ingester (rtmp) -------+-> SRS          |
+|   Device, ...)       |                            |                |
++----------------------+                            |                |
+|  Media Source        |                            |                |
+|  (MPEG-TS/UDP,       |                            |                |
+|   HTTP-FLV,   --push-+->-- Stream Converter ------+-> SRS          |
+|   SRT, ...)          |        (rtmp)              |                |
++----------------------+                            |                |
+|  FFmpeg --push(srt)--+->-- SRT Module -(rtmp)-----+-> SRS          |
++----------------------+----------------------------+----------------+
+```
+
+Key points in the architecture:
+
+- **Encoder**: Pushes an RTMP stream into SRS from tools like OBS, FFmpeg, or FMLE.
+- **Ingester**: SRS forks FFmpeg to pull from external sources (RTSP, files, HTTP) and ingest them as RTMP.
+- **Stream Converter**: Remuxes protocols such as MPEG-TS over UDP, HTTP-FLV push, and SRT into RTMP internally.
+- **SRT Module**: An isolated module that runs in hybrid mode to accept SRT input and forward it as RTMP.
+- **EXEC**: Forks external tools on stream events, similar to the NGINX-RTMP `exec` directive.
+
+## Protocols supported
+
+<CardGroup cols={2}>
+  <Card title="RTMP" icon="tower-broadcast" href="/protocols/rtmp">
+    The original live streaming protocol. Low-latency ingest from OBS, FFmpeg, and hardware encoders. Used as the internal transport format within SRS.
+  </Card>
+  <Card title="WebRTC" icon="globe" href="/protocols/webrtc">
+    Sub-second latency for browser-based publishing and playback. SRS supports RTMP-to-WebRTC and WebRTC-to-RTMP conversion transparently.
+  </Card>
+  <Card title="HLS" icon="film" href="/protocols/hls">
+    HTTP Live Streaming. Segments delivered over standard HTTP. Universally compatible with all devices and CDNs. Typical latency is 10–30 seconds.
+  </Card>
+  <Card title="HTTP-FLV" icon="play" href="/protocols/http-flv">
+    FLV containers delivered over HTTP chunked transfer. Lower latency than HLS with broad player support via JavaScript players.
+  </Card>
+  <Card title="SRT" icon="satellite-dish" href="/protocols/srt">
+    Secure Reliable Transport. Designed for contribution over unreliable networks. Supported as both input and output.
+  </Card>
+  <Card title="MPEG-DASH" icon="circle-play" href="/protocols/mpeg-dash">
+    Dynamic Adaptive Streaming over HTTP. Segment-based delivery with adaptive bitrate. An open standard alternative to HLS.
+  </Card>
+</CardGroup>
+
+## Codec support
+
+| Type  | Codec   | Notes                                      |
+|-------|---------|--------------------------------------------|
+| Video | H.264   | AVC — universal support across all protocols |
+| Video | H.265   | HEVC — supported via RTMP extension and HLS  |
+| Video | AV1     | Open codec; supported in WebRTC and DASH     |
+| Video | VP9     | Google open codec; supported in WebRTC       |
+| Audio | AAC     | Default audio codec for HLS and HTTP-FLV     |
+| Audio | Opus    | High-quality audio for WebRTC                |
+| Audio | G.711   | PCM µ-law/a-law; used in telephony and GB28181 |
+
+## System requirements
+
+SRS runs on Linux and macOS. Docker is available for Windows and other platforms.
+
+| Platform | Architectures                                          |
+|----------|--------------------------------------------------------|
+| Linux    | X86_64, ARMv7, AARCH64, RISC-V, LoongArch, MIPS       |
+| macOS    | Intel (x86_64), Apple Silicon (M1/M2, AARCH64)         |
+| Windows  | Via Docker (no native build)                           |
+
+<Note>
+For Windows users, run SRS with Docker. Native Windows builds are not supported.
+</Note>
+
+## License
+
+SRS is licensed under the [MIT License](https://github.com/ossrs/srs/blob/develop/LICENSE). Some bundled third-party libraries are distributed under their own licenses.

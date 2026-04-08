@@ -1,0 +1,241 @@
+---
+title: "RTMP"
+description: "RTMP (Real-Time Messaging Protocol) for live stream ingest and delivery"
+---
+
+RTMP (Real-Time Messaging Protocol) is the primary ingest protocol for SRS. It runs over TCP, making it reliable and widely supported by encoders such as OBS, FFmpeg, and hardware encoders. SRS listens on TCP port **1935** by default.
+
+## How RTMP Works in SRS
+
+When a publisher connects to SRS over RTMP, the server assigns the stream to a vhost based on the app name or an explicit `vhost` query parameter. Viewers can then pull the same stream via RTMP, or SRS can transmux it to HLS, HTTP-FLV, WebRTC, or other protocols simultaneously.
+
+```
+Publisher ──RTMP──▶ SRS (TCP:1935) ──▶ Players (RTMP / HLS / HTTP-FLV / WebRTC)
+```
+
+## Configuration
+
+### Basic RTMP
+
+The minimal configuration to accept RTMP streams:
+
+```conf
+# rtmp.conf
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+
+rtmp {
+    listen          1935;
+}
+
+vhost __defaultVhost__ {
+}
+```
+
+### RTMP with chunk size
+
+The `chunk_size` setting controls the RTMP chunk size. Larger values improve throughput (~10% gain) at the cost of slightly higher latency on slow connections. The default in SRS is `60000` (bytes).
+
+```conf
+rtmp {
+    listen      1935;
+    chunk_size  60000;
+}
+```
+
+### RTMPS (TLS/SSL)
+
+To accept encrypted RTMP connections (RTMPS) on TCP port 1443, generate a key/cert pair and configure the `rtmps {}` block:
+
+```bash
+# Generate self-signed certificate (development only)
+openssl genrsa -out server.key 2048
+openssl req -new -x509 -key server.key -out server.crt -days 3650 \
+  -subj "/C=CA/ST=Toronto/L=Toronto/O=Me/OU=Me/CN=ossrs.io"
+```
+
+```conf
+rtmps {
+    enabled         on;
+    listen          1443;
+    key             ./conf/server.key;
+    cert            ./conf/server.crt;
+}
+```
+
+### Vhost-level options
+
+These options are set inside a `vhost {}` block and tune per-stream publish/play behavior:
+
+```conf
+vhost __defaultVhost__ {
+    # Reduce latency (disables GOP cache)
+    min_latency off;
+
+    publish {
+        # Timeout waiting for first packet from encoder (ms)
+        firstpkt_timeout 20000;
+        # Timeout between packets during publish (ms)
+        normal_timeout   7000;
+    }
+
+    play {
+        # Cache the last GOP for fast player start
+        gop_cache    on;
+        # Max live queue length in seconds before dropping old GOP
+        queue_length 30;
+        # Merged-write latency for smooth delivery (ms)
+        mw_latency   350;
+    }
+}
+```
+
+### Key configuration options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `listen` | `1935` | TCP port SRS listens on for RTMP |
+| `chunk_size` | `60000` | RTMP chunk size in bytes (max 65536) |
+| `publish.firstpkt_timeout` | `20000` | ms to wait for first packet from encoder |
+| `publish.normal_timeout` | `5000` | ms between packets before disconnecting |
+| `play.gop_cache` | `on` | Cache last GOP for fast player startup |
+| `play.queue_length` | `30` | Max live queue in seconds |
+| `play.mw_latency` | `350` | Merged-write latency in ms |
+| `min_latency` | `off` | Enable minimum-latency mode (disables GOP cache) |
+
+## Publishing
+
+<Tabs>
+  <Tab title="FFmpeg">
+    ```bash
+    ffmpeg -re -i input.mp4 \
+      -c:v libx264 -c:a aac \
+      -f flv rtmp://localhost/live/livestream
+    ```
+
+    For a live capture source:
+
+    ```bash
+    ffmpeg -f avfoundation -i "0:0" \
+      -c:v libx264 -preset veryfast -b:v 2000k \
+      -c:a aac -b:a 128k \
+      -f flv rtmp://your-server/live/livestream
+    ```
+  </Tab>
+  <Tab title="OBS Studio">
+    In OBS Studio, go to **Settings → Stream** and configure:
+
+    | Field | Value |
+    |-------|-------|
+    | Service | Custom |
+    | Server | `rtmp://your-server/live` |
+    | Stream Key | `livestream` |
+
+    Set **Output → Encoder** to x264 or hardware encoder. Recommended settings for low-latency:
+    - Keyframe interval: 2 seconds
+    - Profile: baseline or main
+    - Tune: zerolatency
+  </Tab>
+</Tabs>
+
+## Playing
+
+<Tabs>
+  <Tab title="FFplay">
+    ```bash
+    ffplay rtmp://localhost/live/livestream
+    ```
+  </Tab>
+  <Tab title="VLC">
+    Open VLC → **Media → Open Network Stream** and enter:
+
+    ```
+    rtmp://your-server/live/livestream
+    ```
+  </Tab>
+  <Tab title="mpv">
+    ```bash
+    mpv rtmp://localhost/live/livestream
+    ```
+  </Tab>
+</Tabs>
+
+## URL Format
+
+The standard RTMP URL format:
+
+```
+rtmp://<server>[:<port>]/<app>/<stream>
+```
+
+| Component | Example | Description |
+|-----------|---------|-------------|
+| `server` | `192.168.1.100` | SRS server hostname or IP |
+| `port` | `1935` | TCP port (optional, defaults to 1935) |
+| `app` | `live` | Application name (maps to vhost config) |
+| `stream` | `livestream` | Stream name |
+
+### Vhost in RTMP URLs
+
+When you need to route a stream to a specific vhost, append a `vhost` query parameter:
+
+```
+rtmp://server/live/livestream?vhost=myapp.example.com
+```
+
+SRS resolves the vhost from the query string and applies that vhost's configuration. This is useful when multiple customers or applications share the same SRS instance.
+
+<Note>
+  If no `vhost` parameter is provided, SRS uses `__defaultVhost__`.
+</Note>
+
+## RTMPS
+
+RTMPS is RTMP tunnelled over TLS, listening on TCP **1443** by default. It provides the same functionality as RTMP but with transport-layer encryption.
+
+<Warning>
+  SRS's built-in TLS is suitable for development and testing. For production environments, consider terminating TLS at an Nginx or HAProxy reverse proxy.
+</Warning>
+
+<Steps>
+  <Step title="Generate certificates">
+    ```bash
+    openssl genrsa -out ./conf/server.key 2048
+    openssl req -new -x509 -key ./conf/server.key \
+      -out ./conf/server.crt -days 3650 \
+      -subj "/C=CA/ST=Toronto/L=Toronto/O=Me/OU=Me/CN=ossrs.io"
+    ```
+  </Step>
+  <Step title="Enable rtmps block">
+    ```conf
+    rtmps {
+        enabled  on;
+        listen   1443;
+        key      ./conf/server.key;
+        cert     ./conf/server.crt;
+    }
+    ```
+  </Step>
+  <Step title="Publish with FFmpeg">
+    ```bash
+    ffmpeg -re -i input.mp4 -c copy \
+      -f flv rtmps://your-server:1443/live/livestream
+    ```
+  </Step>
+</Steps>
+
+<CardGroup cols={2}>
+  <Card title="WebRTC" href="/protocols/webrtc">
+    Sub-second latency with WebRTC WHIP/WHEP
+  </Card>
+  <Card title="HLS" href="/protocols/hls">
+    Deliver streams over HTTP to any device
+  </Card>
+  <Card title="HTTP-FLV" href="/protocols/http-flv">
+    Low-latency FLV streaming over HTTP
+  </Card>
+  <Card title="Configuration Overview" href="/configuration/overview">
+    Full SRS configuration reference
+  </Card>
+</CardGroup>

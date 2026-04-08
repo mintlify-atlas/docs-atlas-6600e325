@@ -1,0 +1,235 @@
+---
+title: "Clustering"
+description: "Scale SRS horizontally with origin clusters, edge servers, and stream forwarding."
+---
+
+SRS supports multiple clustering strategies to handle large numbers of concurrent viewers and geographic distribution. The three main approaches are **origin clustering**, **edge servers**, and **forwarding**.
+
+## Architecture Overview
+
+```
+                        ┌─────────────────────────────────┐
+                        │         Origin Cluster           │
+  Encoder ─── RTMP ──► │  ServerA:19350   ServerB:19351  │
+                        │  (coworkers share stream info)   │
+                        └────────────┬────────────────────┘
+                                     │ RTMP pull (on-demand)
+                        ┌────────────▼────────────────────┐
+                        │          Edge Servers            │
+                        │  Edge1:1935      Edge2:1935      │
+                        └────────────┬────────────────────┘
+                                     │
+                     Players ────────┘ (RTMP / HTTP-FLV / HLS)
+```
+
+- **Origin servers** receive streams from encoders and store them.
+- **Edge servers** pull streams from origin only when a viewer requests them (lazy pull).
+- **Forwarding** pushes a copy of every stream to a downstream server unconditionally.
+
+---
+
+## Origin Cluster
+
+An origin cluster consists of multiple SRS instances that share information about which server holds each stream. When a viewer connects to an origin that does not have the stream, it transparently redirects to the correct co-worker.
+
+<Note>
+  Origin cluster only supports RTMP. Use edge servers or HTTP-FLV remux if you need HLS/WebRTC from clustered origins.
+</Note>
+
+Each origin server must know the HTTP API addresses of all co-workers via the `coworkers` directive.
+
+<CodeGroup>
+
+```conf Server A (port 19350, API 9090)
+# origin.cluster.serverA.conf
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+pid                 ./objs/origin.cluster.serverA.pid;
+
+rtmp {
+    listen              19350;
+}
+http_api {
+    enabled         on;
+    listen          9090;
+}
+vhost __defaultVhost__ {
+    cluster {
+        mode            local;
+        origin_cluster  on;
+        coworkers       127.0.0.1:9091 127.0.0.1:9092;
+    }
+}
+```
+
+```conf Server B (port 19351, API 9091)
+# origin.cluster.serverB.conf
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+pid                 ./objs/origin.cluster.serverB.pid;
+
+rtmp {
+    listen              19351;
+}
+http_api {
+    enabled         on;
+    listen          9091;
+}
+vhost __defaultVhost__ {
+    cluster {
+        mode            local;
+        origin_cluster  on;
+        coworkers       127.0.0.1:9090 127.0.0.1:9092;
+    }
+}
+```
+
+</CodeGroup>
+
+### Key directives
+
+| Directive        | Value    | Description                                              |
+|------------------|----------|----------------------------------------------------------|
+| `mode`           | `local`  | This server acts as an origin (not an edge).             |
+| `origin_cluster` | `on`     | Enable co-worker communication.                          |
+| `coworkers`      | `ip:port`| HTTP API addresses of all other origin nodes.            |
+
+---
+
+## Edge Server
+
+An edge server operates in `remote` mode. It does **not** accept streams from encoders directly. Instead, it pulls streams from origin servers on demand — a connection is only established when the first viewer requests the stream.
+
+<Tip>
+  Deploy edge servers close to your viewers for geographic distribution. A single origin cluster can serve thousands of edge servers.
+</Tip>
+
+```conf
+# edge.conf
+max_connections     1000;
+pid                 objs/edge.pid;
+daemon              off;
+srs_log_tank        console;
+
+rtmp {
+    listen          1935;
+}
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+http_api {
+    enabled         on;
+    listen          1985;
+}
+
+vhost __defaultVhost__ {
+    cluster {
+        mode            remote;
+        origin          127.0.0.1:19350;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+}
+```
+
+### Edge limitations
+
+<Warning>
+  Edge servers do **not** support the following features — they are silently disabled at runtime even if configured:
+  - WebRTC (`rtc`)
+  - SRT (`srt_server`)
+  - HLS (`hls`)
+  - MPEG-DASH (`dash`)
+  - DVR (`dvr`)
+  - Forwarding (`forward`)
+</Warning>
+
+### Multiple origin failover
+
+To configure failover, list multiple origin addresses separated by spaces:
+
+```conf
+cluster {
+    mode   remote;
+    origin 192.168.1.10:1935 192.168.1.11:1935 192.168.1.12:1935;
+}
+```
+
+SRS tries each origin in order and falls back to the next if the current one is unavailable.
+
+---
+
+## Forwarding
+
+Forwarding **pushes** every incoming stream to one or more downstream SRS servers unconditionally, regardless of whether any viewers are watching. This differs from edge (pull) because data flows immediately on publish.
+
+<CodeGroup>
+
+```conf Master (receives from encoder, forwards downstream)
+# forward.master.conf
+max_connections     1000;
+pid                 ./objs/srs.master.pid;
+daemon              off;
+srs_log_tank        console;
+
+rtmp {
+    listen              1935;
+}
+vhost __defaultVhost__ {
+    forward {
+        enabled on;
+        destination 127.0.0.1:19350;
+    }
+}
+```
+
+```conf Slave (receives the forwarded stream)
+# forward.slave.conf
+max_connections     1000;
+pid                 ./objs/srs.slave.pid;
+daemon              off;
+srs_log_tank        console;
+
+rtmp {
+    listen              19350;
+}
+vhost __defaultVhost__ {
+}
+```
+
+</CodeGroup>
+
+---
+
+## Edge vs Forward
+
+| Feature                     | Edge (pull)                        | Forward (push)                        |
+|-----------------------------|------------------------------------|---------------------------------------|
+| Stream direction            | Downstream pulls on demand         | Upstream pushes immediately           |
+| Bandwidth used when idle    | None                               | Always (mirrors every stream)         |
+| Latency                     | Small extra latency on first viewer| No extra latency                      |
+| Use case                    | CDN / geographic distribution      | Backup recording, server mirroring    |
+| Supports HLS/DVR            | No (edge limitation)               | Yes (slave is a full origin)          |
+| Viewer-triggered connection | Yes                                | No                                    |
+
+---
+
+## Port Reference
+
+| Component        | Protocol | Default Port | Notes                            |
+|------------------|----------|-------------|----------------------------------|
+| Origin RTMP      | TCP      | 19350 / 19351| Avoid 1935 to separate from edge |
+| Origin HTTP API  | TCP      | 9090 / 9091  | Used by `coworkers` directive    |
+| Edge RTMP        | TCP      | 1935         | Faces public viewers             |
+| Edge HTTP server | TCP      | 8080         | HTTP-FLV / HLS delivery         |
+| Edge HTTP API    | TCP      | 1985         | Management API                   |
+
+<Tip>
+  Run origin servers on non-standard RTMP ports (e.g. 19350, 19351) so they are not directly accessible to viewers. Expose only your edge servers on port 1935.
+</Tip>

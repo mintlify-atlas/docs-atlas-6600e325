@@ -1,0 +1,596 @@
+---
+title: "Server Statistics"
+description: "HTTP API endpoints for monitoring SRS server health, resource usage, virtual hosts, and performance."
+keywords: ["server stats", "monitoring", "cpu", "memory", "vhosts", "srs api"]
+---
+
+The server statistics endpoints expose real-time information about the SRS process, host system resources, virtual hosts, and enabled features. All endpoints are read-only `GET` requests.
+
+<Note>
+  The HTTP API must be enabled. See the [HTTP API Overview](/api/overview) for configuration details.
+</Note>
+
+## Endpoint reference
+
+| Method | Path                          | Description                              |
+|--------|-------------------------------|------------------------------------------|
+| GET    | `/api/v1/versions`            | Server version numbers                   |
+| GET    | `/api/v1/summaries`           | Overall server summary (CPU, mem, conns) |
+| GET    | `/api/v1/rusages`             | POSIX resource usage (`getrusage`)       |
+| GET    | `/api/v1/self_proc_stats`     | Linux `/proc/self/stat` fields           |
+| GET    | `/api/v1/system_proc_stats`   | System-wide CPU stats                    |
+| GET    | `/api/v1/meminfos`            | System memory statistics                 |
+| GET    | `/api/v1/authors`             | License and contributor list             |
+| GET    | `/api/v1/features`            | Compiled feature flags                   |
+| GET    | `/api/v1/requests`            | Echo the incoming HTTP request           |
+| GET    | `/api/v1/vhosts`              | List all virtual hosts                   |
+| GET    | `/api/v1/perf`                | Performance counters                     |
+
+---
+
+## GET /api/v1/versions
+
+Returns the SRS version as major, minor, and revision integers.
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/versions
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "data": {
+    "major": 5,
+    "minor": 0,
+    "revision": 201,
+    "version": "5.0.201"
+  }
+}
+```
+
+<ResponseField name="data.major" type="integer">
+  Major version number.
+</ResponseField>
+
+<ResponseField name="data.minor" type="integer">
+  Minor version number.
+</ResponseField>
+
+<ResponseField name="data.revision" type="integer">
+  Revision / patch number.
+</ResponseField>
+
+<ResponseField name="data.version" type="string">
+  Full dotted version string (e.g. `"5.0.201"`).
+</ResponseField>
+
+---
+
+## GET /api/v1/summaries
+
+Returns a combined server health snapshot including process info, CPU and memory usage, and connection counts.
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/summaries
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "data": {
+    "ok": true,
+    "now_ms": 1712345678901,
+    "self": {
+      "version": "5.0.201",
+      "pid": 12345,
+      "ppid": 1,
+      "argv": "./objs/srs -c conf/srs.conf",
+      "cwd": "/usr/local/srs",
+      "mem_kbyte": 24320,
+      "mem_percent": 0.23,
+      "cpu_percent": 1.45,
+      "srs_uptime": 86400
+    },
+    "system": {
+      "cpu_percent": 8.3,
+      "disk_read_KBps": 0,
+      "disk_write_KBps": 12,
+      "mem_ram_kbyte": 8192000,
+      "mem_ram_percent": 0.41,
+      "mem_swap_kbyte": 2097152,
+      "mem_swap_percent": 0.0,
+      "cpus": 4,
+      "cpus_online": 4,
+      "uptime": 432000,
+      "ilde_time": 1700231,
+      "load_one_minutes": 0.62,
+      "load_five_minutes": 0.55,
+      "load_fifteen_minutes": 0.48,
+      "net_sample_time": 1712345678000,
+      "net_recv_bytes": 1048576,
+      "net_send_bytes": 5242880,
+      "net_recvi_bytes": 1048576,
+      "net_sendi_bytes": 5242880,
+      "srs_recv_bytes": 204800,
+      "srs_send_bytes": 1024000,
+      "conn_sys": 120,
+      "conn_sys_et": 115,
+      "conn_sys_tw": 5,
+      "conn_sys_udp": 3,
+      "conn_srs": 8
+    }
+  }
+}
+```
+
+<ResponseField name="data.ok" type="boolean">
+  Whether the server is healthy.
+</ResponseField>
+
+<ResponseField name="data.now_ms" type="integer">
+  Current server time in milliseconds since epoch.
+</ResponseField>
+
+<ResponseField name="data.self" type="object">
+  <Expandable title="SRS process details">
+    <ResponseField name="version" type="string">Full version string.</ResponseField>
+    <ResponseField name="pid" type="integer">SRS process ID.</ResponseField>
+    <ResponseField name="ppid" type="integer">Parent process ID.</ResponseField>
+    <ResponseField name="argv" type="string">Command-line arguments used to start SRS.</ResponseField>
+    <ResponseField name="cwd" type="string">Working directory of the SRS process.</ResponseField>
+    <ResponseField name="mem_kbyte" type="integer">RSS memory used by SRS, in kilobytes.</ResponseField>
+    <ResponseField name="mem_percent" type="number">SRS memory as a fraction of total system RAM.</ResponseField>
+    <ResponseField name="cpu_percent" type="number">SRS CPU usage as a percentage (0–100).</ResponseField>
+    <ResponseField name="srs_uptime" type="integer">Seconds since SRS started.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="data.system" type="object">
+  <Expandable title="System-wide resource counters">
+    <ResponseField name="cpu_percent" type="number">System-wide CPU usage percentage.</ResponseField>
+    <ResponseField name="mem_ram_kbyte" type="integer">Total physical RAM in kilobytes.</ResponseField>
+    <ResponseField name="mem_ram_percent" type="number">Fraction of RAM in use.</ResponseField>
+    <ResponseField name="cpus" type="integer">Total CPU cores on the host.</ResponseField>
+    <ResponseField name="cpus_online" type="integer">Currently online CPU cores.</ResponseField>
+    <ResponseField name="uptime" type="integer">Host uptime in seconds.</ResponseField>
+    <ResponseField name="load_one_minutes" type="number">1-minute load average.</ResponseField>
+    <ResponseField name="load_five_minutes" type="number">5-minute load average.</ResponseField>
+    <ResponseField name="load_fifteen_minutes" type="number">15-minute load average.</ResponseField>
+    <ResponseField name="conn_srs" type="integer">Number of active SRS connections.</ResponseField>
+    <ResponseField name="srs_recv_bytes" type="integer">Total bytes received by SRS since last sample.</ResponseField>
+    <ResponseField name="srs_send_bytes" type="integer">Total bytes sent by SRS since last sample.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## GET /api/v1/rusages
+
+Returns raw POSIX resource usage from `getrusage(2)` for the SRS process.
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/rusages
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "data": {
+    "ok": true,
+    "sample_time": 1712345678,
+    "ru_utime": 142,
+    "ru_stime": 18,
+    "ru_maxrss": 24576,
+    "ru_ixrss": 0,
+    "ru_idrss": 0,
+    "ru_isrss": 0,
+    "ru_minflt": 31200,
+    "ru_majflt": 0,
+    "ru_nswap": 0,
+    "ru_inblock": 0,
+    "ru_oublock": 456,
+    "ru_msgsnd": 0,
+    "ru_msgrcv": 0,
+    "ru_nsignals": 0,
+    "ru_nvcsw": 120430,
+    "ru_nivcsw": 843
+  }
+}
+```
+
+<ResponseField name="data.ru_utime" type="integer">User CPU time used, in seconds.</ResponseField>
+<ResponseField name="data.ru_stime" type="integer">System CPU time used, in seconds.</ResponseField>
+<ResponseField name="data.ru_maxrss" type="integer">Maximum resident set size in kilobytes.</ResponseField>
+<ResponseField name="data.ru_minflt" type="integer">Minor page faults (no I/O required).</ResponseField>
+<ResponseField name="data.ru_majflt" type="integer">Major page faults (required disk I/O).</ResponseField>
+<ResponseField name="data.ru_nvcsw" type="integer">Voluntary context switches.</ResponseField>
+<ResponseField name="data.ru_nivcsw" type="integer">Involuntary context switches.</ResponseField>
+
+---
+
+## GET /api/v1/self_proc_stats
+
+Returns detailed fields from Linux `/proc/self/stat` for the SRS process. Most fields correspond directly to the `/proc/[pid]/stat` format.
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/self_proc_stats
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "data": {
+    "ok": true,
+    "sample_time": 1712345678,
+    "percent": 1.45,
+    "pid": 12345,
+    "comm": "srs",
+    "state": "S",
+    "ppid": 1,
+    "pgrp": 12345,
+    "session": 12345,
+    "utime": 28400,
+    "stime": 3600,
+    "num_threads": 4,
+    "vsize": 524288000,
+    "rss": 24576
+  }
+}
+```
+
+<ResponseField name="data.percent" type="number">CPU usage percentage for this process.</ResponseField>
+<ResponseField name="data.state" type="string">Process state character (e.g. `"S"` for sleeping, `"R"` for running).</ResponseField>
+<ResponseField name="data.utime" type="integer">Time spent in user mode, in clock ticks.</ResponseField>
+<ResponseField name="data.stime" type="integer">Time spent in kernel mode, in clock ticks.</ResponseField>
+<ResponseField name="data.num_threads" type="integer">Number of threads in the process.</ResponseField>
+<ResponseField name="data.vsize" type="integer">Virtual memory size in bytes.</ResponseField>
+<ResponseField name="data.rss" type="integer">Resident set size in pages.</ResponseField>
+
+---
+
+## GET /api/v1/system_proc_stats
+
+Returns system-wide CPU statistics from `/proc/stat`.
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/system_proc_stats
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "data": {
+    "ok": true,
+    "sample_time": 1712345678,
+    "percent": 8.3,
+    "user": 1234560,
+    "nice": 1200,
+    "sys": 34560,
+    "idle": 9876543,
+    "iowait": 4320,
+    "irq": 0,
+    "softirq": 560,
+    "steal": 0,
+    "guest": 0
+  }
+}
+```
+
+<ResponseField name="data.percent" type="number">Aggregate CPU usage percentage across all cores.</ResponseField>
+<ResponseField name="data.user" type="integer">Time in user mode, in clock ticks.</ResponseField>
+<ResponseField name="data.sys" type="integer">Time in kernel mode, in clock ticks.</ResponseField>
+<ResponseField name="data.idle" type="integer">Time in idle, in clock ticks.</ResponseField>
+<ResponseField name="data.iowait" type="integer">Time waiting for I/O, in clock ticks.</ResponseField>
+
+---
+
+## GET /api/v1/meminfos
+
+Returns system memory statistics parsed from `/proc/meminfo`.
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/meminfos
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "data": {
+    "ok": true,
+    "sample_time": 1712345678,
+    "percent_ram": 0.41,
+    "percent_swap": 0.0,
+    "MemActive": 3244032,
+    "RealInUse": 3244032,
+    "NotInUse": 4947968,
+    "MemTotal": 8192000,
+    "MemFree": 4947968,
+    "Buffers": 102400,
+    "Cached": 1843200,
+    "SwapTotal": 2097152,
+    "SwapFree": 2097152
+  }
+}
+```
+
+<ResponseField name="data.percent_ram" type="number">Fraction of physical RAM currently in use (0–1).</ResponseField>
+<ResponseField name="data.percent_swap" type="number">Fraction of swap space currently in use (0–1).</ResponseField>
+<ResponseField name="data.MemTotal" type="integer">Total physical memory in kilobytes.</ResponseField>
+<ResponseField name="data.MemFree" type="integer">Free physical memory in kilobytes.</ResponseField>
+<ResponseField name="data.MemActive" type="integer">Active memory in kilobytes.</ResponseField>
+<ResponseField name="data.Buffers" type="integer">Memory used for kernel buffers in kilobytes.</ResponseField>
+<ResponseField name="data.Cached" type="integer">Memory used for page cache in kilobytes.</ResponseField>
+<ResponseField name="data.SwapTotal" type="integer">Total swap space in kilobytes.</ResponseField>
+<ResponseField name="data.SwapFree" type="integer">Free swap space in kilobytes.</ResponseField>
+
+---
+
+## GET /api/v1/authors
+
+Returns the SRS license identifier and a list of contributors.
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/authors
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "data": {
+    "license": "MIT",
+    "contributors": "winlin,wenjiegit,runner365,..."
+  }
+}
+```
+
+<ResponseField name="data.license" type="string">SPDX license identifier (e.g. `"MIT"`).</ResponseField>
+<ResponseField name="data.contributors" type="string">Comma-separated GitHub usernames of project contributors.</ResponseField>
+
+---
+
+## GET /api/v1/features
+
+Returns the set of features compiled into this SRS binary.
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/features
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "data": {
+    "options": "--with-ssl --with-hls --with-dvr",
+    "options2": "./configure ...",
+    "build": "2024-04-05 12:00:00",
+    "build2": "1712318400",
+    "features": {
+      "ssl": true,
+      "hls": true,
+      "hds": false,
+      "callback": true,
+      "api": true,
+      "httpd": true,
+      "dvr": true,
+      "transcode": true,
+      "ingest": true,
+      "stat": true,
+      "caster": true,
+      "complex_send": false,
+      "tcp_nodelay": false,
+      "so_sendbuf": false,
+      "mr": false
+    }
+  }
+}
+```
+
+<ResponseField name="data.options" type="string">User-visible configure flags used to build this binary.</ResponseField>
+<ResponseField name="data.build" type="string">Build timestamp in human-readable form.</ResponseField>
+<ResponseField name="data.features" type="object">
+  <Expandable title="Feature flags">
+    <ResponseField name="ssl" type="boolean">TLS/RTMPS support.</ResponseField>
+    <ResponseField name="hls" type="boolean">HLS output support.</ResponseField>
+    <ResponseField name="hds" type="boolean">HDS output support (Adobe).</ResponseField>
+    <ResponseField name="dvr" type="boolean">DVR (recording) support.</ResponseField>
+    <ResponseField name="transcode" type="boolean">FFmpeg transcoding support.</ResponseField>
+    <ResponseField name="callback" type="boolean">HTTP callback hooks support.</ResponseField>
+    <ResponseField name="api" type="boolean">HTTP API support.</ResponseField>
+    <ResponseField name="httpd" type="boolean">Embedded HTTP server support.</ResponseField>
+    <ResponseField name="ingest" type="boolean">Ingest (pull) source support.</ResponseField>
+    <ResponseField name="stat" type="boolean">Statistics support.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## GET /api/v1/requests
+
+Echoes the incoming HTTP request back in the response body. Useful for debugging proxies, headers, and request routing.
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/requests
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "data": {
+    "uri": "http://localhost:1985/api/v1/requests",
+    "path": "/api/v1/requests",
+    "METHOD": "GET",
+    "headers": {
+      "Host": "localhost:1985",
+      "User-Agent": "curl/8.4.0",
+      "Accept": "*/*"
+    }
+  }
+}
+```
+
+---
+
+## GET /api/v1/vhosts
+
+Returns a list of all configured virtual hosts with their stream and client counts and bandwidth usage.
+
+<CodeGroup>
+
+```bash list all vhosts
+curl http://localhost:1985/api/v1/vhosts
+```
+
+```bash get single vhost
+curl http://localhost:1985/api/v1/vhosts/<vhost_id>
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "vhosts": [
+    {
+      "id": "vid-001",
+      "name": "__defaultVhost__",
+      "enabled": true,
+      "clients": 12,
+      "streams": 3,
+      "send_bytes": 10485760,
+      "recv_bytes": 204800,
+      "kbps": {
+        "recv_30s": 800,
+        "send_30s": 4200
+      }
+    }
+  ]
+}
+```
+
+<ResponseField name="vhosts[].id" type="string">Unique vhost identifier.</ResponseField>
+<ResponseField name="vhosts[].name" type="string">Vhost domain name as configured.</ResponseField>
+<ResponseField name="vhosts[].clients" type="integer">Number of connected clients on this vhost.</ResponseField>
+<ResponseField name="vhosts[].streams" type="integer">Number of active streams on this vhost.</ResponseField>
+<ResponseField name="vhosts[].send_bytes" type="integer">Total bytes sent for this vhost.</ResponseField>
+<ResponseField name="vhosts[].recv_bytes" type="integer">Total bytes received for this vhost.</ResponseField>
+<ResponseField name="vhosts[].kbps.recv_30s" type="integer">Inbound bitrate over the last 30 seconds, in kbps.</ResponseField>
+<ResponseField name="vhosts[].kbps.send_30s" type="integer">Outbound bitrate over the last 30 seconds, in kbps.</ResponseField>
+
+---
+
+## GET /api/v1/perf
+
+Returns internal performance counters such as coroutine scheduling statistics.
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/perf
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "data": {
+    "ok": true,
+    "sample_time": 1712345678,
+    "sched": {
+      "nn_loop": 1024000,
+      "nn_timer": 204800,
+      "nn_msgs": 8192000
+    }
+  }
+}
+```
+
+<ResponseField name="data.sched.nn_loop" type="integer">Total coroutine event loop iterations since start.</ResponseField>
+<ResponseField name="data.sched.nn_timer" type="integer">Total timer events fired since start.</ResponseField>
+<ResponseField name="data.sched.nn_msgs" type="integer">Total messages processed since start.</ResponseField>
+
+---
+
+<CardGroup cols={2}>
+  <Card title="Streams API" icon="broadcast-tower" href="/api/streams">
+    List streams and clients, and kick clients by ID.
+  </Card>
+  <Card title="WebRTC API" icon="video" href="/api/rtc">
+    WHIP and WHEP signaling for WebRTC publish and play.
+  </Card>
+  <Card title="HTTP API overview" icon="book-open" href="/api/overview">
+    Base URL, authentication, and response format.
+  </Card>
+  <Card title="Prometheus metrics" icon="chart-line" href="/advanced/prometheus">
+    Export SRS metrics in Prometheus format.
+  </Card>
+</CardGroup>

@@ -1,0 +1,106 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "SRS (Simple Realtime Server)",
+  "projectDescription": "SRS is a high-efficiency, open-source real-time media server supporting RTMP, WebRTC, HLS, HTTP-FLV, SRT, MPEG-DASH, and GB28181 with broad codec support for live streaming and video conferencing.",
+  "theme": "aspen",
+  "primaryColor": "#9ac1d9",
+  "lightColor": "#516e98",
+  "darkColor": "#dedde4",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Streaming Protocols",
+            "pages": [
+              "protocols/rtmp",
+              "protocols/webrtc",
+              "protocols/hls",
+              "protocols/http-flv",
+              "protocols/srt",
+              "protocols/mpeg-dash"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/overview",
+              "configuration/vhosts",
+              "configuration/security",
+              "configuration/transcoding"
+            ]
+          },
+          {
+            "group": "Advanced Features",
+            "pages": [
+              "advanced/clustering",
+              "advanced/dvr",
+              "advanced/http-callbacks",
+              "advanced/gb28181",
+              "advanced/prometheus"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/kubernetes",
+              "deployment/performance"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "HTTP API",
+            "pages": [
+              "api/overview",
+              "api/server-stats",
+              "api/streams",
+              "api/rtc"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Multi-protocol support: RTMP, WebRTC, HLS, HTTP-FLV, SRT, MPEG-DASH, GB28181",
+    "Broad codec support: H.264, H.265, AV1, VP9, AAC, Opus, G.711",
+    "Low-latency real-time streaming with WebRTC",
+    "Cluster support with origin/edge architecture",
+    "HTTP API for server management and monitoring",
+    "DVR (Digital Video Recording) to FLV/MP4",
+    "Transcoding via FFmpeg integration",
+    "HTTP callbacks for stream event notifications",
+    "Prometheus metrics exporter",
+    "Stream forwarding and ingest from external sources",
+    "GB28181 protocol support for IP cameras",
+    "Docker and Kubernetes ready deployment"
+  ],
+  "publicApiSurface": [
+    "GET /api/v1/ — API root",
+    "GET /api/v1/versions — Server version",
+    "GET /api/v1/summaries — Server summaries and stats",
+    "GET /api/v1/rusages — Resource usage",
+    "GET /api/v1/vhosts — List virtual hosts",
+    "GET /api/v1/streams — List active streams",
+    "GET /api/v1/clients — List connected clients",
+    "DELETE /api/v1/clients/:id — Kick a client",
+    "POST /rtc/v1/publish/ — WebRTC publish (WHIP)",
+    "POST /rtc/v1/play/ — WebRTC play (WHEP)",
+    "GET /api/v1/perf — Performance metrics",
+    "POST /api/v1/raw — Raw API for config reload"
+  ]
+}

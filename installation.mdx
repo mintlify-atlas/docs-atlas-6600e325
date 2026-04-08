@@ -1,0 +1,190 @@
+---
+title: 'Installation'
+description: 'Install SRS using Docker, build from source, or run a pre-built binary.'
+keywords: ['srs', 'install', 'docker', 'build from source', 'linux', 'arm', 'macos']
+---
+
+SRS can be installed in three ways: Docker (recommended for most users), building from source, or running a pre-built binary. Choose the method that fits your environment.
+
+## Docker (recommended)
+
+Docker is the fastest way to get SRS running on any platform, including Windows via Docker Desktop.
+
+### Run SRS
+
+```bash
+docker run --rm -it \
+  -p 1935:1935 \
+  -p 1985:1985 \
+  -p 8080:8080 \
+  -p 8000:8000/udp \
+  -p 10080:10080/udp \
+  ossrs/srs:6
+```
+
+SRS starts with the default `docker.conf` configuration, which enables RTMP, HTTP API, HTTP streaming (HLS + HTTP-FLV), and WebRTC.
+
+### Environment variables
+
+The Docker image reads these environment variables at startup:
+
+| Variable       | Default | Description                                                         |
+|----------------|---------|---------------------------------------------------------------------|
+| `SRS_DAEMON`   | `off`   | Run SRS as a background daemon. Keep `off` for Docker so logs go to stdout. |
+| `SRS_IN_DOCKER`| `on`    | Indicates SRS is running inside Docker. Enables container-aware behavior. |
+| `CANDIDATE`    | _(unset)_ | The public IP address advertised for WebRTC ICE candidates. Required for WebRTC. |
+
+### WebRTC with Docker
+
+WebRTC requires SRS to know its reachable IP address. Pass it using the `CANDIDATE` variable:
+
+```bash
+docker run --rm -it \
+  -p 1935:1935 \
+  -p 1985:1985 \
+  -p 8080:8080 \
+  -p 8000:8000/udp \
+  -p 10080:10080/udp \
+  -e CANDIDATE="192.168.1.10" \
+  ossrs/srs:6
+```
+
+<Warning>
+Replace `192.168.1.10` with your machine's actual LAN or public IP. Setting `CANDIDATE` to `localhost` or `127.0.0.1` will cause WebRTC to fail for remote clients.
+</Warning>
+
+### Docker image mirrors
+
+| Region        | Image                                                   |
+|---------------|---------------------------------------------------------|
+| Global        | `ossrs/srs:6`                                           |
+| China (Aliyun)| `registry.cn-hangzhou.aliyuncs.com/ossrs/srs:6`        |
+
+---
+
+## Build from source
+
+Building from source gives you full control over which features are compiled in and lets you run SRS on platforms not covered by pre-built images.
+
+### Prerequisites
+
+Install the required build tools:
+
+<Tabs>
+  <Tab title="Ubuntu / Debian">
+    ```bash
+    apt-get update && apt-get install -y git gcc g++ make patch unzip perl
+    ```
+  </Tab>
+  <Tab title="CentOS / RHEL">
+    ```bash
+    yum install -y git gcc gcc-c++ make patch unzip perl
+    ```
+  </Tab>
+  <Tab title="macOS">
+    ```bash
+    xcode-select --install
+    ```
+    Homebrew is not required. The Xcode command-line tools provide `clang`, `make`, and the standard build toolchain.
+  </Tab>
+</Tabs>
+
+### Clone and build
+
+```bash
+git clone https://github.com/ossrs/srs.git
+cd srs/trunk
+./configure && make
+```
+
+After a successful build, the SRS binary is at `./objs/srs`.
+
+### Run after building
+
+```bash
+./objs/srs -c conf/srs.conf
+```
+
+### Configure options
+
+The `./configure` script accepts flags to enable or disable optional features. SRT and WebRTC are enabled by default.
+
+| Flag           | Default | Description                                 |
+|----------------|---------|---------------------------------------------|
+| `--srt=on/off` | `on`    | Secure Reliable Transport (SRT) protocol    |
+| `--rtc=on/off` | `on`    | WebRTC (RTC) support                        |
+| `--gb28181=on` | `off`   | GB28181 protocol support                    |
+| `--ffmpeg-fit` | auto    | FFmpeg integration for audio transcoding    |
+| `--utest=on`   | `off`   | Build unit tests                            |
+| `--jobs=N`     | `1`     | Parallel make jobs                          |
+
+Example: build without SRT and with GB28181:
+
+```bash
+./configure --srt=off --gb28181=on && make
+```
+
+---
+
+## Pre-built binary
+
+Pre-built binaries are available on the [SRS GitHub Releases page](https://github.com/ossrs/srs/releases). Download the binary matching your platform, extract it, and run:
+
+```bash
+./objs/srs -c conf/srs.conf
+```
+
+<Note>
+Pre-built binaries are provided for common Linux targets. For ARM, RISC-V, LoongArch, or macOS, building from source is recommended.
+</Note>
+
+---
+
+## Platform support
+
+| Platform       | Architecture             | Method                       |
+|----------------|--------------------------|------------------------------|
+| Linux          | X86_64                   | Docker, source, binary       |
+| Linux          | ARMv7                    | Docker, source               |
+| Linux          | AARCH64                  | Docker, source               |
+| Linux          | RISC-V                   | Source (cross-compile)       |
+| Linux          | LoongArch                | Source (cross-compile)       |
+| Linux          | MIPS                     | Source (cross-compile)       |
+| macOS          | Intel (x86_64)           | Source                       |
+| macOS          | Apple Silicon (M1/M2)    | Source, Docker               |
+| Windows        | x86_64                   | Docker only                  |
+
+---
+
+## Port reference
+
+| Port       | Protocol | Purpose                                                   |
+|------------|----------|-----------------------------------------------------------|
+| 1935 TCP   | RTMP     | RTMP ingest and playback                                  |
+| 1985 TCP   | HTTP     | HTTP API (statistics, stream control)                     |
+| 8080 TCP   | HTTP     | HTTP streaming: HLS (`.m3u8`) and HTTP-FLV (`.flv`)       |
+| 8000 UDP   | WebRTC   | WebRTC media (DTLS/SRTP)                                  |
+| 10080 UDP  | SRT      | SRT ingest and playback                                   |
+
+<Tip>
+When deploying behind a firewall or NAT, ensure UDP port 8000 is open for WebRTC and UDP port 10080 is open for SRT. TCP ports 1935, 1985, and 8080 are standard and typically allowed by default.
+</Tip>
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="bolt" href="/quickstart">
+    Publish and play your first stream end-to-end.
+  </Card>
+  <Card title="Configuration overview" icon="sliders" href="/configuration/overview">
+    Learn how to configure vhosts, logging, and protocol options.
+  </Card>
+  <Card title="Docker deployment" icon="docker" href="/deployment/docker">
+    Advanced Docker deployment options including custom configs and volume mounts.
+  </Card>
+  <Card title="Kubernetes" icon="cloud" href="/deployment/kubernetes">
+    Deploy SRS on Kubernetes for scalable production workloads.
+  </Card>
+</CardGroup>

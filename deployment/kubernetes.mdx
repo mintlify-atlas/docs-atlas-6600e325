@@ -1,0 +1,353 @@
+---
+title: "Kubernetes deployment"
+description: "Deploy SRS on Kubernetes with Deployments, Services, ConfigMaps, health probes, and graceful shutdown support."
+keywords: ["kubernetes", "k8s", "deployment", "streaming", "SRS", "container orchestration"]
+---
+
+SRS runs well on Kubernetes. This page covers a production-ready setup including a Deployment, Service, ConfigMap, health probes, and graceful shutdown configuration.
+
+<Note>
+  SRS is a single-process server. To scale horizontally in Kubernetes, run multiple replicas in an edge cluster configuration rather than scaling a single origin instance. See the [clustering guide](/advanced/clustering) for details.
+</Note>
+
+## Basic deployment
+
+### ConfigMap
+
+Store SRS configuration in a ConfigMap so you can update it independently of the image:
+
+```yaml srs-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: srs-config
+  namespace: default
+data:
+  srs.conf: |
+    max_connections     1000;
+    daemon              off;
+    srs_log_tank        console;
+
+    rtmp {
+        listen          1935;
+    }
+    http_api {
+        enabled         on;
+        listen          1985;
+    }
+    http_server {
+        enabled         on;
+        listen          8080;
+        dir             ./objs/nginx/html;
+    }
+    rtc_server {
+        enabled         on;
+        listen          8000;
+        candidate       $CANDIDATE;
+    }
+    vhost __defaultVhost__ {
+        hls {
+            enabled     on;
+        }
+        http_remux {
+            enabled     on;
+            mount       [vhost]/[app]/[stream].flv;
+        }
+        rtc {
+            enabled     on;
+            rtmp_to_rtc on;
+            rtc_to_rtmp on;
+        }
+    }
+```
+
+### Deployment
+
+```yaml srs-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: srs
+  namespace: default
+  labels:
+    app: srs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: srs
+  template:
+    metadata:
+      labels:
+        app: srs
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: srs
+          image: ossrs/srs:latest
+          command: ["./objs/srs", "-c", "conf/srs.conf"]
+          ports:
+            - name: rtmp
+              containerPort: 1935
+              protocol: TCP
+            - name: http-api
+              containerPort: 1985
+              protocol: TCP
+            - name: http-stream
+              containerPort: 8080
+              protocol: TCP
+            - name: webrtc
+              containerPort: 8000
+              protocol: UDP
+            - name: srt
+              containerPort: 10080
+              protocol: UDP
+          env:
+            - name: CANDIDATE
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: SRS_LOG_LEVEL
+              value: "warn"
+            - name: SRS_FORCE_GRACE_QUIT
+              value: "on"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /api/v1/versions
+              port: 1985
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/v1/versions
+              port: 1985
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 2
+          volumeMounts:
+            - name: srs-config
+              mountPath: /usr/local/srs/conf/srs.conf
+              subPath: srs.conf
+      volumes:
+        - name: srs-config
+          configMap:
+            name: srs-config
+```
+
+### Service
+
+```yaml srs-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: srs
+  namespace: default
+  labels:
+    app: srs
+spec:
+  selector:
+    app: srs
+  ports:
+    - name: rtmp
+      port: 1935
+      targetPort: 1935
+      protocol: TCP
+    - name: http-api
+      port: 1985
+      targetPort: 1985
+      protocol: TCP
+    - name: http-stream
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+    - name: webrtc
+      port: 8000
+      targetPort: 8000
+      protocol: UDP
+    - name: srt
+      port: 10080
+      targetPort: 10080
+      protocol: UDP
+  type: LoadBalancer
+```
+
+Apply all three manifests:
+
+```bash
+kubectl apply -f srs-configmap.yaml
+kubectl apply -f srs-deployment.yaml
+kubectl apply -f srs-service.yaml
+```
+
+## WebRTC in Kubernetes
+
+WebRTC requires the server to advertise a reachable IP as the ICE candidate. There are two approaches depending on your cluster setup.
+
+<Tabs>
+  <Tab title="hostNetwork mode">
+    With `hostNetwork: true`, the SRS pod uses the node's network stack directly. The node IP is automatically reachable and can be used as the ICE candidate.
+
+    ```yaml
+    spec:
+      hostNetwork: true
+      containers:
+        - name: srs
+          env:
+            - name: CANDIDATE
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+    ```
+
+    <Warning>
+      `hostNetwork: true` bypasses Kubernetes network isolation. Use this only when lower-level network access is required and you understand the security implications.
+    </Warning>
+  </Tab>
+  <Tab title="NodePort with explicit candidate">
+    Use a `NodePort` service and set `CANDIDATE` to a known node IP or external load balancer IP. This approach preserves normal pod networking:
+
+    ```yaml
+    # In the Service manifest
+    spec:
+      type: NodePort
+      ports:
+        - name: webrtc
+          port: 8000
+          targetPort: 8000
+          nodePort: 30800
+          protocol: UDP
+    ```
+
+    ```yaml
+    # In the Deployment env section
+    env:
+      - name: CANDIDATE
+        value: "203.0.113.50"   # Your node or LB external IP
+    ```
+  </Tab>
+</Tabs>
+
+## Graceful shutdown
+
+Kubernetes sends `SIGTERM` to pods during rolling updates and scale-down events. By default, SRS treats `SIGTERM` as a fast quit. For rolling updates without dropping active streams, configure SRS to treat `SIGTERM` as a graceful quit.
+
+Set `SRS_FORCE_GRACE_QUIT=on` to enable this behavior. SRS will then:
+
+1. Wait `grace_start_wait` milliseconds (default: 2300 ms) before closing listeners, allowing the Kubernetes Service to drain in-flight connections.
+2. Stop accepting new connections and wait for existing streams to finish.
+3. Wait `grace_final_wait` milliseconds (default: 3200 ms) for final cleanup before exiting.
+
+```yaml
+env:
+  - name: SRS_FORCE_GRACE_QUIT
+    value: "on"
+  - name: SRS_GRACE_START_WAIT
+    value: "3000"
+  - name: SRS_GRACE_FINAL_WAIT
+    value: "5000"
+```
+
+Set `terminationGracePeriodSeconds` in the pod spec to a value larger than the sum of `grace_start_wait` + `grace_final_wait` plus any stream drain time. A value of `60` seconds is a safe starting point:
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 60
+```
+
+<Note>
+  The `force_grace_quit` setting was introduced specifically for Kubernetes rolling updates. Without it, in-progress RTMP and WebRTC sessions are dropped immediately on pod termination.
+</Note>
+
+## Environment variables via ConfigMap
+
+You can also manage environment variable configuration through a ConfigMap and inject it as environment variables:
+
+```yaml srs-env-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: srs-env
+  namespace: default
+data:
+  SRS_LOG_LEVEL: "warn"
+  SRS_MAX_CONNECTIONS: "1000"
+  SRS_FORCE_GRACE_QUIT: "on"
+  SRS_GRACE_START_WAIT: "3000"
+  SRS_GRACE_FINAL_WAIT: "5000"
+```
+
+Reference it in the Deployment:
+
+```yaml
+envFrom:
+  - configMapRef:
+      name: srs-env
+```
+
+## Resource recommendations
+
+These are starting-point recommendations. Adjust based on your observed CPU and memory usage (see [Performance](/deployment/performance) for benchmark data).
+
+| Concurrency | CPU request | CPU limit | Memory request | Memory limit |
+|-------------|------------|-----------|---------------|-------------|
+| Up to 500 connections | `250m` | `1000m` | `128Mi` | `512Mi` |
+| Up to 2000 connections | `500m` | `2000m` | `256Mi` | `1Gi` |
+| Up to 5000 connections | `1000m` | `4000m` | `512Mi` | `2Gi` |
+
+<Tip>
+  SRS is single-threaded and uses coroutines internally. It will not benefit from CPU limits above one core for a single instance. To use multiple cores, run multiple SRS instances in an edge cluster topology.
+</Tip>
+
+## Health and readiness probes
+
+Both the liveness and readiness probes target the HTTP API at `/api/v1/versions` on port `1985`. This endpoint returns `200 OK` as soon as SRS is ready to serve connections.
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /api/v1/versions
+    port: 1985
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /api/v1/versions
+    port: 1985
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 2
+```
+
+## Horizontal scaling: edge cluster pattern
+
+SRS is a single-threaded process, so you cannot scale a single instance beyond one CPU core. To handle more concurrent viewers, use the edge cluster pattern:
+
+- One or more **origin** servers receive streams from publishers.
+- Multiple **edge** servers pull streams from the origin on demand and serve viewers.
+
+Each edge SRS instance is an independent Kubernetes pod. You can run the edge Deployment with multiple replicas behind a TCP load balancer:
+
+```yaml
+spec:
+  replicas: 4   # 4 edge pods, each handling up to ~4000 RTMP viewers
+  template:
+    spec:
+      containers:
+        - name: srs-edge
+          image: ossrs/srs:latest
+```
+
+For detailed clustering configuration, see [Clustering](/advanced/clustering).

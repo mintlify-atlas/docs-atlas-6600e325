@@ -1,0 +1,359 @@
+---
+title: "Security"
+description: "IP-based allow/deny rules, token authentication via HTTP callbacks, RTMPS/HTTPS TLS configuration, and HTTP API basic authentication."
+---
+
+SRS provides several layers of access control: IP-based allow/deny rules per vhost, token authentication via HTTP callbacks, TLS for RTMP and HTTP connections, and Basic authentication for the HTTP API.
+
+## IP allow/deny rules
+
+The `security {}` block inside a vhost controls which client IPs can publish or play streams. Rules are evaluated top-to-bottom; the first matching rule wins.
+
+```conf
+vhost security.example.com {
+    security {
+        # Enable security checks (default: off)
+        enabled on;
+
+        # Rules are matched in order. Format:
+        #   allow|deny    publish|play    all|<ip>|<cidr>
+
+        # Allow all playback
+        allow  play    all;
+
+        # Allow publishing only from localhost and private network
+        allow  publish 127.0.0.1;
+        allow  publish 10.0.0.0/8;
+
+        # Deny all other publishers
+        deny   publish all;
+    }
+}
+```
+
+**Rule evaluation order:**
+
+1. If `security` is disabled, all clients are allowed.
+2. If `security` is enabled, the default is to deny all.
+3. Rules are applied in declaration order: first match wins.
+4. `allow` grants access; `deny` rejects.
+
+### Deny all publishing, allow all playback
+
+This is a common pattern for a read-only streaming endpoint:
+
+```conf
+vhost __defaultVhost__ {
+    security {
+        enabled         on;
+        deny            publish     all;
+        allow           play        all;
+    }
+}
+```
+
+### CIDR notation
+
+```conf
+vhost __defaultVhost__ {
+    security {
+        enabled on;
+        allow   play    192.168.0.0/16;
+        allow   publish 10.0.0.0/8;
+        deny    play    all;
+        deny    publish all;
+    }
+}
+```
+
+## Token authentication via HTTP callbacks
+
+For dynamic authentication — validating tokens, checking subscriptions, rate limiting — use HTTP callbacks. SRS calls your backend on `on_publish` and `on_play` events and expects an HTTP 200 response with body `0` to allow the connection, or any non-zero code to reject it.
+
+```conf
+vhost hooks.example.com {
+    http_hooks {
+        enabled on;
+
+        # Called when a publisher connects
+        on_publish http://127.0.0.1:8085/api/v1/streams;
+
+        # Called when a publisher disconnects
+        on_unpublish http://127.0.0.1:8085/api/v1/streams;
+
+        # Called when a player connects
+        on_play http://127.0.0.1:8085/api/v1/sessions;
+
+        # Called when a player disconnects
+        on_stop http://127.0.0.1:8085/api/v1/sessions;
+    }
+}
+```
+
+SRS sends a POST request with a JSON body:
+
+```json
+{
+    "action": "on_publish",
+    "client_id": "9308h583",
+    "ip": "192.168.1.10",
+    "vhost": "hooks.example.com",
+    "app": "live",
+    "stream": "livestream",
+    "param": "?token=abc123"
+}
+```
+
+Your backend must return HTTP 200 with body `0` to allow, or any error code to deny:
+
+```
+0
+```
+
+<Tip>
+Stream tokens passed as query parameters (e.g., `rtmp://server/live/stream?token=abc123`) are available in the `param` field of the callback payload. Use this to implement token-based authentication without building a custom SRS plugin.
+</Tip>
+
+<Note>
+HTTPS callback URLs are supported: `on_publish https://auth.example.com/validate`.
+</Note>
+
+See [HTTP Callbacks](/advanced/http-callbacks) for the full callback reference.
+
+## Referer-based hotlink protection
+
+Restrict playback to requests originating from specific domains:
+
+```conf
+vhost refer.example.com {
+    refer {
+        enabled on;
+
+        # Apply to both publish and play
+        all     example.com app.example.com;
+
+        # Override for publish only
+        publish example.com;
+
+        # Override for play only
+        play    example.com app.example.com;
+    }
+}
+```
+
+## RTMPS (TLS for RTMP)
+
+RTMPS encrypts the RTMP connection with TLS. It is configured as a separate global block alongside the plain `rtmp {}` block.
+
+<Steps>
+  <Step title="Generate TLS certificates">
+    ```bash
+    # Generate private key
+    openssl genrsa -out server.key 2048
+
+    # Generate self-signed certificate (valid 10 years)
+    openssl req -new -x509 -key server.key -out server.crt -days 3650 \
+      -subj "/C=US/ST=California/L=San Francisco/O=MyOrg/CN=video.example.com"
+    ```
+  </Step>
+  <Step title="Configure RTMPS in srs.conf">
+    ```conf
+    # Keep plain RTMP for internal/encoder use
+    rtmp {
+        listen 1935;
+    }
+
+    # Enable RTMPS on port 1443
+    rtmps {
+        enabled  on;
+        listen   1443;
+        key      ./conf/server.key;
+        cert     ./conf/server.crt;
+    }
+
+    vhost __defaultVhost__ {
+    }
+    ```
+  </Step>
+  <Step title="Test the connection">
+    ```bash
+    # Publish via RTMPS
+    ffmpeg -re -i input.mp4 -c copy -f flv rtmps://video.example.com:1443/live/stream
+
+    # Play via RTMPS
+    ffplay rtmps://video.example.com:1443/live/stream
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+The self-signed certificate works for testing but will be rejected by browsers and strict TLS clients. Use a certificate from a trusted CA (e.g., Let's Encrypt) for production.
+</Warning>
+
+## HTTPS for HTTP streaming and API
+
+SRS can serve HLS, HTTP-FLV, and the HTTP API over HTTPS.
+
+<Tabs>
+  <Tab title="HTTPS Streaming">
+    ```conf
+    http_server {
+        enabled on;
+        listen  8080;
+        dir     ./objs/nginx/html;
+
+        https {
+            enabled on;
+            # Port for HTTPS streaming
+            listen  8088;
+            key     ./conf/server.key;
+            cert    ./conf/server.crt;
+        }
+    }
+    ```
+
+    HLS over HTTPS:
+    ```
+    https://video.example.com:8088/live/livestream.m3u8
+    ```
+  </Tab>
+  <Tab title="HTTPS API">
+    ```conf
+    http_api {
+        enabled on;
+        listen  1985;
+
+        https {
+            enabled on;
+            listen  1990;
+            key     ./conf/server.key;
+            cert    ./conf/server.crt;
+        }
+    }
+    ```
+
+    API over HTTPS:
+    ```
+    https://video.example.com:1990/api/v1/versions
+    ```
+  </Tab>
+  <Tab title="Both">
+    ```conf
+    http_api {
+        enabled on;
+        listen  1985;
+        https {
+            enabled on;
+            listen  1990;
+            key     ./conf/server.key;
+            cert    ./conf/server.crt;
+        }
+    }
+
+    http_server {
+        enabled on;
+        listen  8080;
+        dir     ./objs/nginx/html;
+        https {
+            enabled on;
+            listen  8088;
+            key     ./conf/server.key;
+            cert    ./conf/server.crt;
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+SRS's built-in HTTPS server is intended for development and testing. For production, use a reverse proxy such as Nginx or Caddy to terminate TLS and forward to SRS over plain HTTP/RTMP.
+</Note>
+
+## HTTP API authentication
+
+Protect the HTTP API with HTTP Basic authentication:
+
+```conf
+http_api {
+    enabled on;
+    listen  1985;
+
+    auth {
+        enabled  on;
+        username admin;
+        password yourSecurePassword;
+    }
+}
+```
+
+All API requests must include the `Authorization` header:
+
+```bash
+curl -u admin:yourSecurePassword http://127.0.0.1:1985/api/v1/versions
+```
+
+<Warning>
+Basic authentication sends credentials in base64 encoding, which is not encrypted. Always combine API auth with HTTPS or restrict API access to internal networks only.
+</Warning>
+
+## SRT passphrase encryption
+
+SRT streams can be encrypted with AES using a passphrase:
+
+```conf
+srt_server {
+    enabled on;
+    listen  10080;
+
+    # Passphrase for AES encryption (10-79 characters)
+    passphrase "your-secure-passphrase";
+
+    # Key length: 0 (disabled), 16 (AES-128), 24 (AES-192), 32 (AES-256)
+    pbkeylen 16;
+}
+```
+
+## Security best practices
+
+<Accordion title="Restrict API access to localhost or internal networks">
+By default, the HTTP API listens on all interfaces. Bind it to `127.0.0.1` to prevent external access:
+
+```conf
+http_api {
+    enabled on;
+    listen  127.0.0.1:1985;
+}
+```
+
+Or use a firewall rule to block port 1985 from the public internet.
+</Accordion>
+
+<Accordion title="Use RTMPS or a TLS proxy in production">
+Plain RTMP sends all data in cleartext. For production deployments where streams carry sensitive content or credentials are passed as parameters:
+
+- Use RTMPS directly with a trusted CA certificate, or
+- Place Nginx with `stream {}` module in front of SRS to terminate TLS.
+</Accordion>
+
+<Accordion title="Use token authentication for stream keys">
+Do not rely on obscure stream names as security. Use `http_hooks` to validate a token on every `on_publish` event, and rotate tokens regularly.
+</Accordion>
+
+<Accordion title="Enable security rules for public-facing vhosts">
+For any vhost accessible from the internet, explicitly set `security { enabled on; }` and add only the rules you intend. Without `security`, any client can publish or play.
+</Accordion>
+
+<Accordion title="Limit max connections">
+Set `max_connections` to a value appropriate for your server capacity. This prevents resource exhaustion from connection floods:
+
+```conf
+max_connections 500;
+```
+</Accordion>
+
+## Further reading
+
+- [Configuration Overview](/configuration/overview) — config file format and environment variables
+- [Virtual Hosts](/configuration/vhosts) — vhost structure
+- [HTTP Callbacks](/advanced/http-callbacks) — full callback event reference
+- [API Overview](/api/overview) — HTTP API details

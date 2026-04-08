@@ -1,0 +1,253 @@
+---
+title: "Performance"
+description: "SRS performance benchmarks, tuning options, hardware recommendations, and monitoring guidance."
+keywords: ["performance", "benchmarks", "tuning", "concurrency", "throughput", "SRS"]
+---
+
+SRS is built on [State Threads](https://state-threads.sourceforge.net/), a coroutine-based I/O library. It runs as a **single-threaded, single-process** server that handles all connections through cooperative multitasking. This design eliminates lock contention and context-switching overhead, giving SRS high throughput per CPU core.
+
+## Architecture overview
+
+| Property | Value |
+|----------|-------|
+| Threading model | Single-threaded coroutines (State Threads) |
+| Process model | Single process |
+| I/O model | Non-blocking, event-driven |
+| Concurrency limit | Configurable via `max_connections` (default: 1000) |
+
+Because SRS is single-threaded, **one SRS instance uses at most one CPU core**. To use multiple cores, run multiple independent SRS instances behind a load balancer or use the edge cluster pattern. See [Clustering](/advanced/clustering).
+
+## Benchmarks
+
+All benchmarks below use the [srs-bench](https://github.com/ossrs/srs-bench) tool. The test environment is CentOS 7 with a video bitrate of 600 Kbps and a G5-2.5 GHz (SkyLake) CPU, unless otherwise noted.
+
+### RTMP playback
+
+| Date | SRS version | Players | CPU | Memory |
+|------|-------------|---------|-----|--------|
+| 2014-12-07 | 2.0.67 | 10,000 | 95% | 656 MB |
+| 2014-12-05 | 2.0.57 | 9,000 | 90% | 468 MB |
+| 2014-12-05 | 2.0.55 | 8,000 | 89% | 360 MB |
+| 2014-11-22 | 2.0.30 | 7,500 | 87% | 320 MB |
+| 2014-11-13 | 2.0.15 | 6,000 | 82% | 203 MB |
+
+**SRS vs NginxRTMP** (G5 8-CPU VM, SRS/v4.0.105):
+
+| Server | Players | CPU (1 thread) | Memory | Threads |
+|--------|---------|---------------|--------|---------|
+| SRS v4.0.105 | 4,000 | ~94% × 1 core | 419 MB | 1 |
+| NginxRTMP v1.2.1 | 2,400 | ~92% × 1 core | 173 MB | 1 |
+
+### RTMP publishing
+
+| Date | SRS version | Publishers | CPU | Memory |
+|------|-------------|-----------|-----|--------|
+| 2014-12-04 | 2.0.52 | 4,000 | 80% | 331 MB |
+| 2014-12-04 | 2.0.51 | 2,500 | 91% | 259 MB |
+| 2014-12-03 | 2.0.48 | 1,400 | 95% | 140 MB |
+| 2014-12-03 | 2.0.47 | 1,200 | 84% | 76 MB |
+
+**SRS vs NginxRTMP** (G5 8-CPU VM, SRS/v4.0.105):
+
+| Server | Publishers | CPU (1 thread) | Memory | Threads |
+|--------|-----------|---------------|--------|---------|
+| SRS v4.0.105 | 2,300 | ~89% × 1 core | 1.1 GB | 1 |
+| NginxRTMP v1.2.1 | 1,300 | ~84% × 1 core | 198 MB | 1 |
+
+### HTTP-FLV playback
+
+| Date | SRS version | Players | CPU | Memory |
+|------|-------------|---------|-----|--------|
+| 2014-05-25 | 2.0.171 | 6,000 | 84% | 297 MB |
+| 2014-05-24 | 2.0.170 | 3,000 | 89% | 96 MB |
+
+### WebRTC (RTC benchmark)
+
+Tests run on CentOS 7 with a G5 or G7 VM, SRS v4.0.105:
+
+| Date | SRS version | Clients | Type | CPU | Memory | VM |
+|------|-------------|---------|------|-----|--------|----|
+| 2021-05-10 | v4.0.105 | 2,000 | players | ~94% × 1 | 462 MB | G7 2CPU |
+| 2021-05-10 | v4.0.105 | 1,000 | players | ~90% × 1 | 180 MB | G5 2CPU |
+| 2021-05-10 | v4.0.105 | 1,700 | publishers | ~92% × 1 | 334 MB | G7 2CPU |
+| 2021-05-10 | v4.0.105 | 950 | publishers | ~92% × 1 | 132 MB | G5 2CPU |
+
+**SRS vs Janus** (G5 2-CPU VM):
+
+| Server | Clients | Type | CPU | Memory | Threads |
+|--------|---------|------|-----|--------|---------|
+| SRS v4.0.105 | 1,000 | players | ~90% × 1 | 180 MB | 1 |
+| Janus v0.11.1 | 700 | players | ~93% × 2 | 430 MB | 24 |
+
+### Latency
+
+End-to-end latency with SRS in real-time configuration:
+
+| Date | SRS version | Protocol | H.264 latency |
+|------|-------------|----------|--------------|
+| 2014-12-16 | 2.0.72 | RTMP | ~0.4 s |
+| 2021-04-02 | 4.0.87 | WebRTC | ~80 ms |
+
+## Hardware recommendations
+
+| Concurrent viewers (RTMP) | CPU cores | RAM | Notes |
+|--------------------------|-----------|-----|-------|
+| Up to 1,000 | 1 core | 256 MB | Default `max_connections 1000` |
+| Up to 4,000 | 1 core | 512 MB | Increase `max_connections` |
+| Up to 10,000 | 1 core | 1 GB | Single SRS on fast CPU, tune chunk_size |
+| 10,000+ | Multiple cores | 2+ GB | Multiple SRS instances + edge cluster |
+
+<Note>
+  These are guidelines based on the benchmarks above (600 Kbps streams, G5-2.5 GHz CPU). Higher bitrate streams consume proportionally more memory and bandwidth.
+</Note>
+
+## Connection limit
+
+SRS drops new connections when the limit is reached. The default is 1000. Increase it based on your hardware:
+
+```conf
+max_connections 4000;
+```
+
+Or set it via environment variable:
+
+```bash
+docker run -e SRS_MAX_CONNECTIONS=4000 ossrs/srs:latest
+```
+
+## Tuning options
+
+### chunk_size
+
+RTMP divides messages into chunks. The default chunk size is 128 bytes. Increasing it to the maximum (65536 bytes) reduces framing overhead and improves throughput for high-bitrate streams:
+
+```conf
+rtmp {
+    listen      1935;
+    chunk_size  60000;
+}
+```
+
+The full.conf default is `60000`. This is strongly recommended for production deployments.
+
+### send_min_interval
+
+`send_min_interval` paces packet delivery for players that expect a constant inter-packet interval (common on some embedded devices):
+
+```conf
+vhost __defaultVhost__ {
+    play {
+        # Minimum interval between packets in ms. 0 to disable.
+        send_min_interval 10.0;
+    }
+}
+```
+
+Setting this above `0` adds slight latency but can prevent buffering issues on constrained playback devices.
+
+### reduce_sequence_header
+
+Some clients fail when they receive duplicate sequence headers. Enable this to suppress redundant sequence headers when the codec parameters have not changed:
+
+```conf
+vhost __defaultVhost__ {
+    play {
+        reduce_sequence_header on;
+    }
+}
+```
+
+### mw_latency (merged-write)
+
+SRS batches outgoing messages to reduce system call overhead. The `mw_latency` setting controls the maximum batching window in milliseconds:
+
+```conf
+vhost __defaultVhost__ {
+    play {
+        # Batch writes up to 350ms worth of data. Lower value = less latency.
+        mw_latency 350;
+        mw_msgs    8;
+    }
+}
+```
+
+For low-latency streaming, reduce `mw_latency` and set `min_latency on`. For maximum throughput with many viewers, keep the defaults.
+
+## Multi-process scaling
+
+SRS does not have built-in multi-process or multi-threaded scaling. To use more than one CPU core:
+
+- Run multiple independent SRS instances on different ports.
+- Place an edge cluster of SRS instances behind a TCP load balancer.
+- Use the origin-edge topology: one origin receives publishes, multiple edge servers serve viewers.
+
+See [Clustering](/advanced/clustering) for the complete edge cluster setup.
+
+## TCP kernel tuning
+
+For deployments with thousands of concurrent connections, increase the OS-level limits before starting SRS:
+
+```bash
+# Increase the maximum number of open file descriptors
+ulimit -n 65535
+
+# Kernel TCP tuning (add to /etc/sysctl.conf for persistence)
+sysctl -w net.core.somaxconn=65535
+sysctl -w net.ipv4.tcp_max_syn_backlog=65535
+sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+sysctl -w net.ipv4.tcp_tw_reuse=1
+```
+
+<Warning>
+  Apply kernel tuning on the host, not inside the Docker container. Container processes inherit the host kernel settings for network parameters.
+</Warning>
+
+## Benchmarking tools
+
+Use [srs-bench](https://github.com/ossrs/srs-bench) to load-test your SRS deployment:
+
+<Tabs>
+  <Tab title="RTMP playback">
+    ```bash
+    # Simulate 1000 RTMP players pulling a stream
+    ./objs/srs_bench -sr rtmp://127.0.0.1:1935/live/livestream -nn 1000
+    ```
+  </Tab>
+  <Tab title="WebRTC playback">
+    ```bash
+    # Simulate 100 WebRTC subscribers (see srs-bench feature/rtc branch)
+    ./objs/srs_bench -sr webrtc://127.0.0.1/live/livestream -nn 100
+    ```
+  </Tab>
+</Tabs>
+
+## Monitoring
+
+### HTTP API summaries
+
+Poll the `/api/v1/summaries` endpoint for a snapshot of server-wide metrics including CPU, memory, connections, and bitrate:
+
+```bash
+curl http://localhost:1985/api/v1/summaries
+```
+
+See [Server stats](/api/server-stats) for a full description of the response fields.
+
+### Prometheus integration
+
+SRS exposes Prometheus-compatible metrics. Enable the Prometheus exporter in your config and scrape from `http://localhost:9972/metrics`:
+
+```conf
+http_api {
+    enabled on;
+    listen  1985;
+}
+exporter {
+    enabled     on;
+    listen      9972;
+    label       cn-beijing;
+    tag         cn-edge;
+}
+```
+
+For a complete monitoring setup with Grafana dashboards, see [Prometheus](/advanced/prometheus).

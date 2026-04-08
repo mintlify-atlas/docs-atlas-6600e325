@@ -1,0 +1,305 @@
+---
+title: "SRT (Secure Reliable Transport)"
+description: "Reliable UDP transport protocol for contribution and production workflows"
+---
+
+SRT (Secure Reliable Transport) is an open-source transport protocol optimized for low-latency, high-quality video delivery over unreliable networks. SRS supports SRT on **UDP port 10080**, making it an excellent choice for contribution links, remote production, and broadcast-grade ingest.
+
+## How SRT Works in SRS
+
+```
+Encoder ──SRT/UDP:10080──▶ SRS ──srt_to_rtmp──▶ RTMP/HLS/HTTP-FLV/WebRTC
+```
+
+SRS accepts SRT streams and optionally converts them to RTMP internally. This lets any downstream protocol (HLS, HTTP-FLV, WebRTC) play back a stream that was originally ingested over SRT.
+
+## Configuration
+
+### Basic SRT
+
+```conf
+# srt.conf
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+
+rtmp {
+    listen              1935;
+}
+
+http_api {
+    enabled         on;
+    listen          1985;
+}
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+
+srt_server {
+    enabled on;
+    listen 10080;
+    maxbw 1000000000;
+    connect_timeout 4000;
+    peerlatency 0;
+    recvlatency 0;
+    latency 0;
+    tsbpdmode off;
+    tlpktdrop on;
+    sendbuf 2000000;
+    recvbuf 2000000;
+    default_streamid "#!::r=live/livestream,m=publish";
+}
+
+vhost __defaultVhost__ {
+    srt {
+        enabled     on;
+        srt_to_rtmp on;
+    }
+
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+}
+```
+
+### Full srt_server options
+
+```conf
+srt_server {
+    enabled                 on;
+
+    # UDP port to listen on
+    listen                  10080;
+
+    # Max bandwidth in bytes/s. -1=unlimited, 0=use SRTO_INPUTBW, >0=fixed
+    maxbw                   1000000000;
+
+    # Maximum Segment Size in bytes
+    mss                     1500;
+
+    # Connection timeout on sender side (ms)
+    connect_timeout         4000;
+
+    # Idle timeout on receiver side (ms)
+    peer_idle_timeout       8000;
+
+    # Default app name for short streamid format
+    default_app             live;
+
+    # Default mode for short streamid: publish | request
+    default_mode            request;
+
+    # Default streamid when client does not provide one
+    default_streamid        "#!::r=live/livestream,m=request";
+
+    # Peer latency (sender notifies receiver, ms)
+    peerlatency             0;
+
+    # Receive latency (sender-to-receiver, ms)
+    recvlatency             0;
+
+    # Shorthand: sets both peerlatency and recvlatency
+    latency                 0;
+
+    # Timestamp-based packet delivery mode
+    tsbpdmode               off;
+
+    # Too-late packet drop (prevent buffer overflow)
+    tlpktdrop               on;
+
+    # Send/recv buffer sizes
+    sendbuf                 2000000;
+    recvbuf                 2000000;
+
+    # AES encryption passphrase (10-79 chars). Empty = no encryption.
+    # passphrase            your-passphrase;
+
+    # AES key length: 0 (disabled), 16 (AES-128), 24 (AES-192), 32 (AES-256)
+    # pbkeylen              16;
+}
+```
+
+### Vhost SRT options
+
+```conf
+vhost srt.vhost.srs.com {
+    srt {
+        # Enable SRT on this vhost
+        enabled     on;
+        # Convert incoming SRT stream to RTMP internally
+        srt_to_rtmp on;
+    }
+}
+```
+
+### Key configuration options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `listen` | `10080` | UDP port for SRT |
+| `maxbw` | `1000000000` | Max bandwidth in bytes/s (-1 = unlimited) |
+| `connect_timeout` | `4000` | Connection timeout in ms |
+| `peer_idle_timeout` | `8000` | Idle disconnection timeout in ms |
+| `latency` | `0` | Combined send+receive latency in ms |
+| `tsbpdmode` | `off` | Timestamp-based packet delivery |
+| `tlpktdrop` | `on` | Drop late packets to prevent buffer overflow |
+| `sendbuf` | `2000000` | Send buffer size in bytes |
+| `recvbuf` | `2000000` | Receive buffer size in bytes |
+| `srt_to_rtmp` | `off` | Convert SRT ingest to RTMP internally |
+
+## URL Format
+
+SRT uses a `streamid` parameter to identify the application, stream, and mode (publish or play).
+
+### Full streamid format
+
+```
+srt://<server>:<port>?streamid=#!::r=<app>/<stream>,m=<mode>
+```
+
+| Component | Description |
+|-----------|-------------|
+| `r=<app>/<stream>` | Resource path (e.g., `live/livestream`) |
+| `m=publish` | Publisher mode (sending a stream) |
+| `m=request` | Player mode (receiving a stream) |
+
+### Publishing
+
+```
+srt://your-server:10080?streamid=#!::r=live/livestream,m=publish
+```
+
+### Playback
+
+```
+srt://your-server:10080?streamid=#!::r=live/livestream,m=request
+```
+
+### Short streamid format
+
+SRS also supports a simplified streamid format without the `#!::` prefix. The server interprets the mode using the `default_mode` setting:
+
+```
+srt://your-server:10080?streamid=live/livestream
+```
+
+With `default_mode publish`, the above URL publishes. With `default_mode request`, it plays back.
+
+<Note>
+  The `default_streamid` in `srt_server {}` is used when a client connects without providing a `streamid` at all.
+</Note>
+
+## Publishing and Playback with FFmpeg
+
+<Tabs>
+  <Tab title="Publish">
+    ```bash
+    # Publish a file as SRT stream
+    ffmpeg -re -i input.mp4 \
+      -c:v libx264 -c:a aac \
+      -f mpegts \
+      "srt://your-server:10080?streamid=#!::r=live/livestream,m=publish"
+    ```
+
+    ```bash
+    # Publish a live capture
+    ffmpeg -f avfoundation -i "0:0" \
+      -c:v libx264 -preset veryfast -b:v 2000k \
+      -c:a aac -b:a 128k \
+      -f mpegts \
+      "srt://your-server:10080?streamid=#!::r=live/livestream,m=publish"
+    ```
+  </Tab>
+  <Tab title="Play">
+    ```bash
+    # Play an SRT stream with FFplay
+    ffplay "srt://your-server:10080?streamid=#!::r=live/livestream,m=request"
+    ```
+
+    ```bash
+    # Pull and re-stream with FFmpeg
+    ffmpeg -i "srt://your-server:10080?streamid=#!::r=live/livestream,m=request" \
+      -c copy -f flv rtmp://other-server/live/stream
+    ```
+  </Tab>
+</Tabs>
+
+## SRT-to-RTMP Conversion
+
+When `srt_to_rtmp on` is set on a vhost, SRS internally converts the SRT MPEG-TS stream to RTMP. This makes the SRT-ingested stream available to all downstream consumers:
+
+- RTMP players on `rtmp://server/live/livestream`
+- HTTP-FLV players on `http://server:8080/live/livestream.flv`
+- HLS players on `http://server:8080/live/livestream.m3u8` (if HLS is enabled)
+- WebRTC players (if RTC is enabled with `rtmp_to_rtc on`)
+
+```conf
+vhost __defaultVhost__ {
+    srt {
+        enabled     on;
+        srt_to_rtmp on;  # Bridge SRT → RTMP internally
+    }
+}
+```
+
+## Encryption
+
+SRT includes built-in AES encryption. Configure a passphrase and key length:
+
+```conf
+srt_server {
+    enabled     on;
+    listen      10080;
+    passphrase  "your-secure-passphrase";  # 10-79 characters
+    pbkeylen    16;                         # 16=AES-128, 24=AES-192, 32=AES-256
+}
+```
+
+All clients must use the same passphrase:
+
+```bash
+ffmpeg -re -i input.mp4 -c copy -f mpegts \
+  "srt://your-server:10080?streamid=#!::r=live/livestream,m=publish&passphrase=your-secure-passphrase"
+```
+
+<Warning>
+  Keep `tlpktdrop on`. Disabling it while `tsbpdmode on` can cause buffer overflow and 100% CPU usage from retransmission storms under network congestion.
+</Warning>
+
+## SRT with vHost Routing
+
+SRS can route SRT streams to different vhosts. Use the `h` (host) parameter in the streamid:
+
+```
+srt://server:10080?streamid=#!::h=srs.srt.com.cn,r=live/stream,m=publish
+```
+
+Add the corresponding vhost to your config:
+
+```conf
+vhost srs.srt.com.cn {
+    srt {
+        enabled     on;
+        srt_to_rtmp on;
+    }
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="RTMP" href="/protocols/rtmp">
+    Ingest and deliver with RTMP
+  </Card>
+  <Card title="WebRTC" href="/protocols/webrtc">
+    Sub-second latency for browser players
+  </Card>
+  <Card title="HLS" href="/protocols/hls">
+    Deliver to any HLS device
+  </Card>
+  <Card title="Clustering" href="/advanced/clustering">
+    Scale SRS across multiple servers
+  </Card>
+</CardGroup>

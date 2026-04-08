@@ -1,0 +1,251 @@
+---
+title: "MPEG-DASH"
+description: "Adaptive bitrate streaming with MPEG-DASH"
+---
+
+MPEG-DASH (Dynamic Adaptive Streaming over HTTP) is an international open standard for adaptive bitrate video streaming. SRS can automatically segment an RTMP stream into DASH segments and generate an MPD (Media Presentation Description) manifest, served over the built-in HTTP server on port **8080**.
+
+## How MPEG-DASH Works in SRS
+
+```
+Publisher ──RTMP──▶ SRS ──segments──▶ .m4s / init.mp4 files
+                          ──updates──▶ .mpd manifest
+                          ──HTTP──▶ Players (port 8080)
+```
+
+SRS writes MPEG-4 fragmented MP4 segments and an MPD file to disk, then serves them via its embedded HTTP server. No external server is required.
+
+## DASH vs HLS
+
+| Feature | MPEG-DASH | HLS |
+|---------|-----------|-----|
+| Standard | ISO/IEC 23009-1 (open) | Proprietary (Apple) |
+| Segment format | fMP4 (`.m4s`) | MPEG-TS (`.ts`) or fMP4 (`.m4s`) |
+| Manifest | `.mpd` (XML) | `.m3u8` (plain text) |
+| Native iOS/Safari | No (requires JS) | Yes |
+| Native Android | No (requires JS) | Partial |
+| Browser support | Via dash.js / Shaka | Via hls.js / native |
+| Latency | Comparable to HLS | Comparable to DASH |
+
+<Note>
+  DASH is an open international standard with no vendor lock-in. It is widely supported by smart TVs, set-top boxes, and streaming platforms via JavaScript players like dash.js and Shaka Player.
+</Note>
+
+## Configuration
+
+### Basic MPEG-DASH
+
+```conf
+# dash.conf
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+
+rtmp {
+    listen              1935;
+}
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+
+vhost __defaultVhost__ {
+    dash {
+        enabled             on;
+        dash_fragment       10;
+        dash_update_period  10;
+        dash_window_size    3;
+        dash_path           ./objs/nginx/html;
+        dash_mpd_file       [app]/[stream].mpd;
+    }
+}
+```
+
+### Full dash {} block
+
+```conf
+vhost dash.srs.com {
+    dash {
+        # Enable DASH for this vhost
+        enabled             on;
+
+        # Duration of each DASH segment in seconds
+        dash_fragment       30;
+
+        # How often to update the MPD manifest in seconds
+        dash_update_period  150;
+
+        # Timeshift buffer depth in seconds
+        dash_timeshift      300;
+
+        # Root directory for all DASH files
+        dash_path           ./objs/nginx/html;
+
+        # MPD filename template
+        # Variables: [vhost], [app], [stream]
+        dash_mpd_file       [app]/[stream].mpd;
+
+        # Playlist window in seconds (segments kept in MPD)
+        dash_window_size    5;
+
+        # Remove expired segments from disk
+        dash_cleanup        on;
+
+        # Dispose DASH files after N seconds of inactivity (0 = disabled)
+        dash_dispose        120;
+    }
+}
+```
+
+### Key configuration options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `off` | Enable DASH for this vhost |
+| `dash_fragment` | `30` | Segment duration in seconds |
+| `dash_update_period` | `150` | MPD update interval in seconds |
+| `dash_timeshift` | `300` | Timeshift buffer depth in seconds |
+| `dash_path` | `./objs/nginx/html` | Root directory for DASH files |
+| `dash_mpd_file` | `[app]/[stream].mpd` | MPD file path template |
+| `dash_window_size` | `5` | Number of segments kept in the MPD |
+| `dash_cleanup` | `on` | Delete expired segment files |
+| `dash_dispose` | `120` | Inactivity timeout before removing all DASH files |
+
+## URL Format
+
+Once SRS is running and a stream is published, the MPD manifest is accessible at:
+
+```
+http://<server>:8080/<app>/<stream>.mpd
+```
+
+**Examples:**
+
+```
+http://192.168.1.100:8080/live/livestream.mpd
+http://your-domain.com:8080/live/event.mpd
+```
+
+## Setup
+
+<Steps>
+  <Step title="Start SRS with DASH config">
+    ```bash
+    ./objs/srs -c conf/dash.conf
+    ```
+  </Step>
+  <Step title="Publish a stream via RTMP">
+    ```bash
+    ffmpeg -re -i input.mp4 \
+      -c:v libx264 -c:a aac \
+      -f flv rtmp://localhost/live/livestream
+    ```
+  </Step>
+  <Step title="Play the DASH stream">
+    <Tabs>
+      <Tab title="dash.js (Browser)">
+        ```html
+        <script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+        <video id="videoPlayer" controls></video>
+        <script>
+          const url = 'http://localhost:8080/live/livestream.mpd';
+          const player = dashjs.MediaPlayer().create();
+          player.initialize(document.querySelector('#videoPlayer'), url, true);
+        </script>
+        ```
+      </Tab>
+      <Tab title="Shaka Player (Browser)">
+        ```html
+        <script src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.3.0/shaka-player.compiled.js"></script>
+        <video id="video" controls autoplay></video>
+        <script>
+          shaka.polyfill.installAll();
+          const video = document.getElementById('video');
+          const player = new shaka.Player(video);
+          player.load('http://localhost:8080/live/livestream.mpd');
+        </script>
+        ```
+      </Tab>
+      <Tab title="ffplay">
+        ```bash
+        ffplay http://localhost:8080/live/livestream.mpd
+        ```
+      </Tab>
+      <Tab title="VLC">
+        ```
+        vlc http://localhost:8080/live/livestream.mpd
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+## Tuning Latency
+
+DASH latency is primarily controlled by `dash_fragment` and `dash_window_size`. Smaller fragments reduce latency at the cost of more HTTP requests and server load.
+
+**Standard latency (default):**
+
+```conf
+dash {
+    enabled             on;
+    dash_fragment       10;
+    dash_update_period  10;
+    dash_window_size    3;
+}
+```
+
+**Lower latency:**
+
+```conf
+dash {
+    enabled             on;
+    dash_fragment       2;
+    dash_update_period  2;
+    dash_window_size    5;
+}
+```
+
+<Tip>
+  For the lowest possible latency, consider using [WebRTC](/protocols/webrtc) instead. DASH is better suited for scale and compatibility than for sub-second delivery.
+</Tip>
+
+## Enabling DASH and HLS Together
+
+SRS can serve both DASH and HLS from the same RTMP stream simultaneously:
+
+```conf
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+        hls_fragment    10;
+        hls_window      60;
+    }
+
+    dash {
+        enabled             on;
+        dash_fragment       10;
+        dash_update_period  10;
+        dash_window_size    3;
+    }
+}
+```
+
+This allows players to use whichever protocol they support best, with no additional encoding or processing overhead.
+
+<CardGroup cols={2}>
+  <Card title="HLS" href="/protocols/hls">
+    Apple's HTTP Live Streaming
+  </Card>
+  <Card title="RTMP" href="/protocols/rtmp">
+    Ingest streams via RTMP
+  </Card>
+  <Card title="WebRTC" href="/protocols/webrtc">
+    Sub-second latency streaming
+  </Card>
+  <Card title="Configuration Overview" href="/configuration/overview">
+    Full SRS configuration reference
+  </Card>
+</CardGroup>

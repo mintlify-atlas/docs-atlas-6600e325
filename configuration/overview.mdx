@@ -1,0 +1,240 @@
+---
+title: "Configuration Overview"
+description: "How SRS configuration files work, global settings, environment variable overrides, hot reload, and include directives."
+---
+
+SRS uses a custom nginx-style configuration format. Every setting is a directive terminated by a semicolon, and related directives are grouped into named blocks with curly braces.
+
+## Config file location
+
+The default config file is `conf/srs.conf`. Pass the `-c` flag to specify a different file:
+
+```bash
+./objs/srs -c conf/srs.conf
+```
+
+## Minimal working config
+
+The following is a complete, working config for live streaming with RTMP input, HLS output, and HTTP-FLV output:
+
+```conf
+# Live streaming config for SRS.
+# @see full.conf for detail config.
+
+max_connections     1000;
+srs_log_tank        console;
+daemon              off;
+rtmp {
+    listen              1935;
+}
+
+http_api {
+    enabled         on;
+    listen          1985;
+}
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+}
+```
+
+## Global settings
+
+These directives appear at the top level of the config file, outside any block.
+
+| Directive | Default | Description |
+|---|---|---|
+| `pid` | `./objs/srs.pid` | Path to the PID file. |
+| `srs_log_tank` | `file` | Log destination: `console` or `file`. |
+| `srs_log_level` | `trace` | Log verbosity: `verbose`, `info`, `trace`, `warn`, `error`. |
+| `srs_log_file` | `./objs/srs.log` | Log file path when `srs_log_tank` is `file`. |
+| `max_connections` | `1000` | Maximum simultaneous client connections. |
+| `daemon` | `on` | Run as a background daemon. Set `off` for Docker/foreground mode. |
+| `utc_time` | `off` | Use UTC timestamps in logs when `on`. |
+| `ff_log_dir` | `./objs` | Directory for FFmpeg transcoding log files. |
+| `work_dir` | `./` | Working directory for the server process. |
+| `inotify_auto_reload` | `off` | Reload config automatically when the file changes. |
+
+## Port reference
+
+| Port | Protocol | Service |
+|---|---|---|
+| `1935` | TCP | RTMP ingest and playback |
+| `1985` | TCP | HTTP API |
+| `8080` | TCP | HTTP streaming (HLS, HTTP-FLV, etc.) |
+| `8000` | UDP | WebRTC (WHIP/WHEP) |
+| `10080` | UDP | SRT |
+| `1443` | TCP | RTMPS (TLS) |
+
+## Environment variable overrides
+
+Every config directive can be overridden with an environment variable. The naming convention is:
+
+- Global directives: `SRS_<DIRECTIVE>` — e.g., `SRS_LISTEN`, `SRS_LOG_LEVEL`, `SRS_MAX_CONNECTIONS`
+- Block directives: `SRS_<BLOCK>_<DIRECTIVE>` — e.g., `SRS_HTTP_API_ENABLED`, `SRS_HTTP_SERVER_LISTEN`
+- Vhost directives: `SRS_VHOST_<DIRECTIVE>` applies to all vhosts — e.g., `SRS_VHOST_HLS_ENABLED`
+
+<CodeGroup>
+```bash Common overrides
+# Listen port
+SRS_LISTEN=1935
+
+# Log level
+SRS_LOG_LEVEL=warn
+
+# Max connections
+SRS_MAX_CONNECTIONS=5000
+
+# HTTP API
+SRS_HTTP_API_ENABLED=on
+SRS_HTTP_API_LISTEN=1985
+
+# WebRTC candidate IP
+SRS_RTC_SERVER_CANDIDATE=192.168.1.100
+```
+
+```bash Docker example
+docker run --rm -it \
+  -e SRS_LISTEN=1935 \
+  -e SRS_HTTP_API_ENABLED=on \
+  -e SRS_HTTP_API_LISTEN=1985 \
+  -e SRS_HTTP_SERVER_ENABLED=on \
+  -e SRS_HTTP_SERVER_LISTEN=8080 \
+  -e CANDIDATE=192.168.1.100 \
+  -p 1935:1935 -p 1985:1985 -p 8080:8080 \
+  ossrs/srs:latest
+```
+</CodeGroup>
+
+<Note>
+Environment variables take precedence over values in the config file. This makes it easy to use a base config file and override specific settings per environment without modifying the file.
+</Note>
+
+## Config validation
+
+Test a config file for syntax errors before starting or reloading:
+
+```bash
+./objs/srs -t -c conf/srs.conf
+```
+
+If the config is valid, SRS exits with code `0`. Any errors are printed to stdout.
+
+## Hot reload
+
+SRS supports reloading most configuration without dropping active connections.
+
+<Steps>
+  <Step title="Edit the config file">
+    Make your changes to `conf/srs.conf` (or whichever file SRS is using).
+  </Step>
+  <Step title="Send SIGHUP to reload">
+    ```bash
+    # Using the PID file
+    kill -1 $(cat ./objs/srs.pid)
+
+    # Or via the HTTP API
+    curl http://127.0.0.1:1985/api/v1/raw?rpc=reload
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Some directives do not support hot reload and require a full restart. These are noted in the config with `@remark: do not support reload` or `Note: Do not support reloading, for SRS5+`. Examples include `pid`, `srs_log_tank`, `srs_log_file`, `daemon`, and `ff_log_dir`.
+</Warning>
+
+## Include directives
+
+Split a large config into multiple files with the `include` directive. SRS will inline the contents of the included file at the point of the directive.
+
+```conf
+# Main config file
+max_connections     1000;
+srs_log_tank        console;
+daemon              off;
+
+rtmp {
+    listen              1935;
+}
+
+http_api {
+    enabled         on;
+    listen          1985;
+}
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+
+include             ./conf/include.vhost.conf;
+```
+
+The included file `include.vhost.conf` contains the vhost definitions:
+
+```conf
+vhost include.srs.com {
+    hls {
+        enabled         on;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+}
+```
+
+<Tip>
+Include directives can appear anywhere in the config file — at the global level, inside a vhost block, or inside any other block. This makes it easy to share common vhost configurations across multiple config files.
+</Tip>
+
+## Config file structure
+
+A full SRS config file is organized into these top-level sections:
+
+<Accordion title="Global directives">
+Directives like `pid`, `daemon`, `max_connections`, `srs_log_tank`, and `srs_log_level` appear at the top level outside any block.
+</Accordion>
+
+<Accordion title="Protocol server blocks">
+Each protocol listener is a named block:
+
+- `rtmp { }` — RTMP server settings (listen port, chunk size)
+- `rtmps { }` — RTMPS (TLS) settings
+- `http_api { }` — HTTP API server
+- `http_server { }` — HTTP streaming server
+- `rtc_server { }` — WebRTC server
+- `srt_server { }` — SRT server
+</Accordion>
+
+<Accordion title="vhost blocks">
+Each `vhost <name> { }` block configures a virtual host. Protocol-specific features like HLS, DVR, transcoding, and security are configured as sub-blocks inside the vhost.
+</Accordion>
+
+<Accordion title="Global feature blocks">
+Some features are configured globally outside vhosts:
+
+- `circuit_breaker { }` — CPU-based circuit breaker
+- `exporter { }` — Prometheus metrics exporter
+- `heartbeat { }` — Heartbeat reporting to an API
+- `stats { }` — System resource statistics
+</Accordion>
+
+## Further reading
+
+- [Virtual Hosts](/configuration/vhosts) — vhost structure and stream namespacing
+- [Security](/configuration/security) — IP allow/deny, RTMPS, HTTPS, and API auth
+- [Transcoding](/configuration/transcoding) — FFmpeg-based transcoding config

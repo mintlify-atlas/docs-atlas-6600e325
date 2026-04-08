@@ -1,0 +1,305 @@
+---
+title: "HLS (HTTP Live Streaming)"
+description: "Deliver streams to any HLS-compatible device over HTTP"
+---
+
+HLS (HTTP Live Streaming) is Apple's adaptive streaming protocol. SRS can automatically segment an incoming RTMP stream into HLS `.ts` files (or fMP4 `.m4s` files) and update an `.m3u8` playlist, serving them from the built-in HTTP server on port **8080**.
+
+HLS is universally supported on iOS, Android, modern browsers (via Media Source Extensions or native HLS), smart TVs, and desktop players like VLC.
+
+## How HLS Works in SRS
+
+```
+Publisher ──RTMP──▶ SRS ──segments──▶ .ts / .m4s files
+                          ──updates──▶ .m3u8 playlist
+                          ──HTTP──▶ Players (port 8080)
+```
+
+SRS writes segments and playlists to disk (default: `./objs/nginx/html`) and serves them over its embedded HTTP server. No external web server is required.
+
+## Configuration
+
+### Basic HLS
+
+```conf
+# hls.conf
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+
+rtmp {
+    listen              1935;
+}
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+        hls_path        ./objs/nginx/html;
+        hls_fragment    10;
+        hls_window      60;
+        hls_recover     on;
+    }
+}
+```
+
+### Full HLS options
+
+```conf
+vhost hls.srs.com {
+    hls {
+        enabled             on;
+
+        # Use fMP4 container instead of MPEG-TS
+        hls_use_fmp4        off;
+
+        # Duration of each segment in seconds
+        hls_fragment        10;
+
+        # EXT-X-TARGETDURATION ratio
+        hls_td_ratio        1.0;
+
+        # For pure-audio, overflow ratio to reap segment
+        hls_aof_ratio       2.1;
+
+        # Playlist window: total seconds of segments in m3u8
+        hls_window          60;
+
+        # Resume sequence numbers after stream restart
+        hls_recover         on;
+
+        # Error handling: ignore | disconnect | continue
+        hls_on_error        continue;
+
+        # Where to write m3u8 and ts files
+        hls_path            ./objs/nginx/html;
+
+        # m3u8 filename template
+        hls_m3u8_file       [app]/[stream].m3u8;
+
+        # TS segment filename template
+        hls_ts_file         [app]/[stream]-[seq].ts;
+
+        # fMP4 segment filename (used when hls_use_fmp4 on)
+        hls_fmp4_file       [app]/[stream]-[seq].m4s;
+
+        # fMP4 init segment filename
+        hls_init_file       [app]/[stream]/init.mp4;
+
+        # CDN prefix for segment URLs in m3u8
+        # hls_entry_prefix  http://your-cdn-server;
+
+        # Remove old expired segments
+        hls_cleanup         on;
+
+        # Dispose HLS files after N seconds of inactivity (0 = disabled)
+        hls_dispose         120;
+
+        # Wait for keyframe before cutting a new segment
+        hls_wait_keyframe   on;
+    }
+}
+```
+
+### Key configuration options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `off` | Enable HLS for this vhost |
+| `hls_fragment` | `10` | Segment duration in seconds |
+| `hls_window` | `60` | Playlist window in seconds (number of segments × duration) |
+| `hls_path` | `./objs/nginx/html` | Root directory for all HLS files |
+| `hls_m3u8_file` | `[app]/[stream].m3u8` | Playlist filename template |
+| `hls_ts_file` | `[app]/[stream]-[seq].ts` | TS segment filename template |
+| `hls_recover` | `on` | Continue sequence numbers on stream restart |
+| `hls_cleanup` | `on` | Delete expired segments from disk |
+| `hls_dispose` | `120` | Seconds of inactivity before removing all HLS files |
+| `hls_wait_keyframe` | `on` | Only cut segments on keyframes |
+| `hls_use_fmp4` | `off` | Use fMP4 (`.m4s`) instead of MPEG-TS (`.ts`) |
+| `hls_on_error` | `continue` | Error behavior: `ignore`, `disconnect`, or `continue` |
+
+## URL Format
+
+Once SRS is running and a stream is published, the HLS playlist is available at:
+
+```
+http://<server>:8080/<app>/<stream>.m3u8
+```
+
+**Examples:**
+
+```
+http://192.168.1.100:8080/live/livestream.m3u8
+http://your-domain.com:8080/live/event.m3u8
+```
+
+### Vhost-specific URL
+
+If you have a specific vhost configured, the URL includes the vhost path:
+
+```
+http://192.168.1.100:8080/vhost-name/live/livestream.m3u8
+```
+
+## Publishing and Playback
+
+<Steps>
+  <Step title="Start SRS">
+    ```bash
+    ./objs/srs -c conf/hls.conf
+    ```
+  </Step>
+  <Step title="Publish a stream via RTMP">
+    ```bash
+    ffmpeg -re -i input.mp4 \
+      -c:v libx264 -c:a aac \
+      -f flv rtmp://localhost/live/livestream
+    ```
+  </Step>
+  <Step title="Play the HLS stream">
+    <Tabs>
+      <Tab title="VLC">
+        ```
+        vlc http://localhost:8080/live/livestream.m3u8
+        ```
+      </Tab>
+      <Tab title="FFplay">
+        ```bash
+        ffplay http://localhost:8080/live/livestream.m3u8
+        ```
+      </Tab>
+      <Tab title="Browser (hls.js)">
+        ```html
+        <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+        <video id="video" controls></video>
+        <script>
+          const video = document.getElementById('video');
+          const src = 'http://localhost:8080/live/livestream.m3u8';
+          if (Hls.isSupported()) {
+            const hls = new Hls();
+            hls.loadSource(src);
+            hls.attachMedia(video);
+          } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            // Native HLS (Safari, iOS)
+            video.src = src;
+          }
+        </script>
+        ```
+      </Tab>
+      <Tab title="iOS / Safari">
+        On iOS or macOS Safari, HLS is natively supported. Simply set the `src` of a `<video>` element:
+
+        ```html
+        <video src="http://your-server:8080/live/livestream.m3u8"
+               controls autoplay playsinline></video>
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+## HLS with DVR (Keep Segments on Disk)
+
+By default, SRS removes old segments to limit disk usage. To keep all segments for VOD/DVR, disable cleanup and set a long window:
+
+```conf
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+        hls_fragment    10;
+        hls_window      3600;    # 1-hour playlist
+        hls_cleanup     off;     # Keep all segments
+        hls_dispose     0;       # Never delete files
+    }
+}
+```
+
+<Tip>
+  For full DVR functionality (MP4 recording, custom paths, etc.), see the [DVR documentation](/advanced/dvr).
+</Tip>
+
+## Audio-Only HLS
+
+SRS can produce an audio-only HLS stream. Configure `hls_aof_ratio` to control how long each audio-only segment runs:
+
+```conf
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+        hls_fragment    10;
+        hls_aof_ratio   2.1;    # Reap audio-only segment at 10*2.1 = 21s max
+    }
+}
+```
+
+Audio-only streams are useful for music streaming or podcast distribution.
+
+## HLS Encryption (AES-128)
+
+SRS supports AES-128 encryption for HLS segments, preventing unauthorized playback without the key.
+
+Enable it in the vhost config:
+
+```conf
+vhost __defaultVhost__ {
+    hls {
+        enabled                 on;
+        hls_keys                on;
+        hls_fragments_per_key   5;
+        hls_key_file            [app]/[stream]-[seq].key;
+        hls_key_file_path       ./objs/nginx/html;
+        hls_key_url             http://localhost:8080/;
+    }
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `hls_keys` | `off` | Enable AES-128 encryption |
+| `hls_fragments_per_key` | `5` | Number of segments encrypted with the same key |
+| `hls_key_file` | `[app]/[stream]-[seq].key` | Key file name template |
+| `hls_key_file_path` | `./objs/nginx/html` | Directory to write key files |
+| `hls_key_url` | (empty) | Base URL for key retrieval (supports query strings for auth tokens) |
+
+<Note>
+  The `hls_key_url` supports query parameters for token-based authentication. For example: `http://localhost:8080/?token=abc123`
+</Note>
+
+## CDN Distribution
+
+To distribute HLS via a CDN, set `hls_entry_prefix` to the CDN URL. SRS will write absolute segment URLs into the `.m3u8` playlist:
+
+```conf
+vhost __defaultVhost__ {
+    hls {
+        enabled             on;
+        hls_entry_prefix    http://cdn.example.com;
+    }
+}
+```
+
+The generated playlist will reference segments as:
+```
+http://cdn.example.com/live/livestream-0.ts
+http://cdn.example.com/live/livestream-1.ts
+```
+
+<CardGroup cols={2}>
+  <Card title="RTMP" href="/protocols/rtmp">
+    Ingest streams into SRS via RTMP
+  </Card>
+  <Card title="MPEG-DASH" href="/protocols/mpeg-dash">
+    Open-standard adaptive bitrate streaming
+  </Card>
+  <Card title="DVR" href="/advanced/dvr">
+    Record streams to disk
+  </Card>
+  <Card title="HTTP Callbacks" href="/advanced/http-callbacks">
+    React to HLS segment events
+  </Card>
+</CardGroup>

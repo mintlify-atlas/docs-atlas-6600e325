@@ -1,0 +1,217 @@
+---
+title: "HTTP API Overview"
+description: "SRS exposes a JSON HTTP API on port 1985 for server management, monitoring, and WebRTC signaling."
+keywords: ["http api", "rest api", "json api", "srs api"]
+---
+
+SRS provides an HTTP API for server monitoring, stream management, and WebRTC signaling. All responses are JSON. The API listens on port `1985` by default and is separate from the HTTP streaming server on port `8080`.
+
+## Enabling the HTTP API
+
+Add the following block to your SRS configuration file:
+
+```nginx srs.conf
+http_api {
+    enabled     on;
+    listen      1985;
+}
+```
+
+Restart SRS for the change to take effect.
+
+## Base URL
+
+```
+http://<server>:1985
+```
+
+All API paths are relative to this base URL.
+
+## API namespaces
+
+| Namespace     | Description                        |
+|---------------|------------------------------------|
+| `/api/v1/`    | Server stats, streams, and clients |
+| `/rtc/v1/`    | WebRTC signaling (WHIP/WHEP)       |
+
+## Response format
+
+Every response from the SRS API uses the following envelope:
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "data": { ... }
+}
+```
+
+<ResponseField name="code" type="integer" required>
+  Status code. `0` indicates success. Any non-zero value indicates an error.
+</ResponseField>
+
+<ResponseField name="server" type="string">
+  Unique server ID. Changes on each restart.
+</ResponseField>
+
+<ResponseField name="service" type="string">
+  Unique service ID for the current process lifetime.
+</ResponseField>
+
+<ResponseField name="pid" type="string">
+  Operating system process ID of the SRS server.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  Endpoint-specific payload. Structure varies by endpoint.
+</ResponseField>
+
+### Error codes
+
+A `code` of `0` means the request succeeded. Non-zero codes represent errors:
+
+| Code  | Meaning                     |
+|-------|-----------------------------|
+| `0`   | Success                     |
+| `400` | Bad request                 |
+| `404` | Resource not found          |
+| `405` | Method not allowed          |
+| non-zero | Application-level error |
+
+## Quick start
+
+Verify the API is reachable:
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/versions
+```
+
+```bash curl (pretty-printed)
+curl -s http://localhost:1985/api/v1/versions | python3 -m json.tool
+```
+
+</CodeGroup>
+
+Sample response:
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "data": {
+    "major": 5,
+    "minor": 0,
+    "revision": 201,
+    "version": "5.0.201"
+  }
+}
+```
+
+## Authentication
+
+The HTTP API supports optional HTTP Basic Authentication. When enabled, every request must include an `Authorization` header with a valid username and password.
+
+```nginx srs.conf
+http_api {
+    enabled     on;
+    listen      1985;
+    auth {
+        enabled     on;
+        username    admin;
+        password    admin;
+    }
+}
+```
+
+<Warning>
+  Change the default credentials before exposing the API on a public or production network.
+</Warning>
+
+Authenticate requests using the `-u` flag in curl:
+
+```bash
+curl -u admin:admin http://localhost:1985/api/v1/summaries
+```
+
+## HTTPS API
+
+SRS can serve the HTTP API over TLS. This is intended for development and testing. Use a reverse proxy such as Nginx or Caddy in production.
+
+```nginx srs.conf
+http_api {
+    enabled     on;
+    listen      1985;
+    https {
+        enabled     on;
+        listen      1990;
+        key         ./conf/server.key;
+        cert        ./conf/server.crt;
+    }
+}
+```
+
+<Note>
+  Browser-based WebRTC requires HTTPS. If your SRS server runs behind a TLS-terminating proxy, configure the proxy to forward to the HTTP API port instead of enabling the built-in HTTPS server.
+</Note>
+
+## Raw API (dynamic reload)
+
+The Raw API allows you to trigger a configuration reload over HTTP without restarting the server. It is disabled by default.
+
+```nginx srs.conf
+http_api {
+    enabled     on;
+    listen      1985;
+    raw_api {
+        enabled         on;
+        allow_reload    on;
+    }
+}
+```
+
+Trigger a reload:
+
+```bash
+curl http://localhost:1985/api/v1/raw?rpc=reload
+```
+
+Fetch the current reload state:
+
+```bash
+curl http://localhost:1985/api/v1/raw?rpc=reload-fetch
+```
+
+<Warning>
+  The Raw API grants significant control over the running server. Enable it only on trusted, internal networks.
+</Warning>
+
+## JSONP support
+
+All API endpoints support JSONP. Add a `callback` query parameter to receive the response wrapped in a JavaScript function call:
+
+```bash
+curl "http://localhost:1985/api/v1/versions?callback=myFunc"
+```
+
+## API pages
+
+<CardGroup cols={2}>
+  <Card title="Server statistics" icon="chart-bar" href="/api/server-stats">
+    CPU, memory, resource usage, vhosts, features, and performance counters.
+  </Card>
+  <Card title="Streams" icon="broadcast-tower" href="/api/streams">
+    List active streams and connected clients, and kick clients by ID.
+  </Card>
+  <Card title="WebRTC API" icon="video" href="/api/rtc">
+    WHIP publish and WHEP play signaling endpoints for WebRTC.
+  </Card>
+  <Card title="Overview" icon="book-open" href="/api/overview">
+    This page — base URL, auth, response format, and configuration.
+  </Card>
+</CardGroup>

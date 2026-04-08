@@ -1,97 +1,100 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "SRS — Simple Realtime Server"
+description: "A high-efficiency, open-source real-time media server supporting RTMP, WebRTC, HLS, HTTP-FLV, SRT, MPEG-DASH, and GB28181."
 ---
 
-## Setting up
+SRS is a simple, high-efficiency real-time media server built in C++. It supports a broad set of streaming protocols and codecs, making it suitable for live streaming, video conferencing, and IP camera integration at scale.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Run SRS with Docker in minutes and start streaming with RTMP or WebRTC.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="download" href="/installation">
+    Build from source or deploy with Docker on Linux, macOS, or ARM.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Streaming Protocols" icon="tower-broadcast" href="/protocols/rtmp">
+    RTMP, WebRTC, HLS, HTTP-FLV, SRT, MPEG-DASH — all in one server.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/overview">
+    HTTP API for server management, stream stats, and WebRTC signaling.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What SRS supports
 
-Everything you need to create world-class documentation.
+<CardGroup cols={3}>
+  <Card title="RTMP" icon="video" href="/protocols/rtmp">
+    Ingest streams from OBS, FFmpeg, or any RTMP encoder on port 1935.
+  </Card>
+  <Card title="WebRTC" icon="globe" href="/protocols/webrtc">
+    Sub-second latency streaming with WHIP/WHEP on UDP port 8000.
+  </Card>
+  <Card title="HLS" icon="film" href="/protocols/hls">
+    Deliver adaptive HLS streams to any device over HTTP.
+  </Card>
+  <Card title="HTTP-FLV" icon="play" href="/protocols/http-flv">
+    Low-latency FLV delivery over plain HTTP for browser players.
+  </Card>
+  <Card title="SRT" icon="signal" href="/protocols/srt">
+    Reliable UDP transport for contribution and production workflows.
+  </Card>
+  <Card title="MPEG-DASH" icon="chart-bar" href="/protocols/mpeg-dash">
+    Adaptive bitrate streaming with MPEG-DASH manifests.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Get started in 60 seconds
 
-## Need inspiration?
+<Steps>
+  <Step title="Run SRS with Docker">
+    ```bash
+    docker run --rm -it -p 1935:1935 -p 1985:1985 -p 8080:8080 \
+        -p 8000:8000/udp -p 10080:10080/udp ossrs/srs:6
+    ```
+  </Step>
+  <Step title="Publish a stream with FFmpeg">
+    ```bash
+    ffmpeg -re -i input.flv -c copy -f flv rtmp://localhost/live/livestream
+    ```
+    Or use OBS with server `rtmp://localhost/live` and stream key `livestream`.
+  </Step>
+  <Step title="Play your stream">
+    Open `http://localhost:8080` to access the built-in player, or play directly:
+    - **RTMP**: `rtmp://localhost/live/livestream`
+    - **HLS**: `http://localhost:8080/live/livestream.m3u8`
+    - **HTTP-FLV**: `http://localhost:8080/live/livestream.flv`
+  </Step>
+  <Step title="Explore the HTTP API">
+    ```bash
+    curl http://localhost:1985/api/v1/versions
+    ```
+    See the [API Reference](/api/overview) for the full API surface.
+  </Step>
+</Steps>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Clustering" icon="server" href="/advanced/clustering">
+    Scale with origin/edge cluster architecture for thousands of concurrent viewers.
+  </Card>
+  <Card title="DVR" icon="hard-drive" href="/advanced/dvr">
+    Record live streams to FLV or MP4 files on disk automatically.
+  </Card>
+  <Card title="HTTP Callbacks" icon="webhook" href="/advanced/http-callbacks">
+    Receive events for stream publish, play, and disconnect via HTTP hooks.
+  </Card>
+  <Card title="Transcoding" icon="arrows-rotate" href="/configuration/transcoding">
+    Transcode streams in real time using FFmpeg integration.
+  </Card>
+  <Card title="Prometheus Metrics" icon="chart-line" href="/advanced/prometheus">
+    Export server metrics to Prometheus for monitoring and alerting.
+  </Card>
+  <Card title="GB28181" icon="camera" href="/advanced/gb28181">
+    Ingest streams from IP cameras and NVRs using the GB28181 protocol.
+  </Card>
+</CardGroup>
+
+<Note>
+SRS is licensed under [MIT](https://github.com/ossrs/srs/blob/develop/LICENSE). It supports Linux, macOS, and ARM architectures including X86_64, ARMv7, AARCH64, RISC-V, and LoongArch.
+</Note>

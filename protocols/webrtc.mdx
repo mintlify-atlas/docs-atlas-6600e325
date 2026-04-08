@@ -1,0 +1,342 @@
+---
+title: "WebRTC"
+description: "Sub-second latency streaming with WebRTC (WHIP/WHEP)"
+---
+
+SRS supports WebRTC for sub-second latency live streaming using the WHIP (WebRTC HTTP Ingest Protocol) and WHEP (WebRTC HTTP Egress Protocol) standards. WebRTC media flows over **UDP port 8000** while signaling uses the HTTP API on **TCP port 1985**.
+
+## How WebRTC Works in SRS
+
+```
+Browser/Publisher ──WHIP──▶ SRS (TCP:1985 signaling)
+                   ──RTP/SRTP──▶ SRS (UDP:8000 media)
+
+SRS ──WHEP──▶ Browser/Player (TCP:1985 signaling)
+    ──RTP/SRTP──▶ Browser/Player (UDP:8000 media)
+```
+
+SRS can also bridge WebRTC with RTMP, allowing:
+- RTMP publishers → WebRTC players (RTMP-to-WebRTC)
+- WebRTC publishers → RTMP players or HLS (WebRTC-to-RTMP)
+
+## Configuration
+
+### Basic WebRTC
+
+```conf
+# rtc.conf
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+
+rtmp {
+    listen              1935;
+}
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+
+http_api {
+    enabled         on;
+    listen          1985;
+}
+
+stats {
+    network         0;
+}
+
+rtc_server {
+    enabled on;
+    listen 8000; # UDP port
+    # @see https://ossrs.io/lts/en-us/docs/v7/doc/webrtc#config-candidate
+    candidate $CANDIDATE;
+}
+
+vhost __defaultVhost__ {
+    rtc {
+        enabled     on;
+        # @see https://ossrs.io/lts/en-us/docs/v7/doc/webrtc#rtmp-to-rtc
+        rtmp_to_rtc off;
+        # @see https://ossrs.io/lts/en-us/docs/v7/doc/webrtc#rtc-to-rtmp
+        rtc_to_rtmp off;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+}
+```
+
+### RTMP-to-WebRTC
+
+Enable `rtmp_to_rtc` to allow RTMP publishers to be played via WebRTC. SRS automatically transcodes AAC audio to Opus:
+
+```conf
+# rtmp2rtc.conf
+rtc_server {
+    enabled on;
+    listen 8000;
+    candidate $CANDIDATE;
+}
+
+vhost __defaultVhost__ {
+    rtc {
+        enabled     on;
+        rtmp_to_rtc on;
+        rtc_to_rtmp on;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+}
+```
+
+### WebRTC-to-RTMP
+
+Enable `rtc_to_rtmp` to allow WebRTC publishers (browser) to be played via RTMP, HLS, or HTTP-FLV:
+
+```conf
+# rtc2rtmp.conf
+rtc_server {
+    enabled on;
+    listen 8000;
+    candidate $CANDIDATE;
+}
+
+vhost __defaultVhost__ {
+    rtc {
+        enabled     on;
+        rtmp_to_rtc on;
+        rtc_to_rtmp on;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+}
+```
+
+### Advanced rtc_server options
+
+```conf
+rtc_server {
+    enabled             on;
+    listen              8000;       # UDP port for media
+    candidate           *;          # Auto-detect server IP
+    protocol            udp;        # udp | tcp | all
+    ip_family           ipv4;       # ipv4 | ipv6 | all
+
+    # WebRTC over TCP (for networks that block UDP)
+    tcp {
+        enabled         off;
+        listen          8000;
+    }
+
+    ecdsa               on;         # Use ECDSA (vs RSA) for DTLS
+    encrypt             on;         # Enable SRTP encryption (always on)
+    reuseport           1;          # UDP port reuse count
+    merge_nalus         off;        # Merge multiple NALUs into one RTP packet
+}
+```
+
+### Key vhost RTC options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `off` | Enable WebRTC for this vhost |
+| `rtmp_to_rtc` | `off` | Transmux incoming RTMP to WebRTC |
+| `rtc_to_rtmp` | `off` | Transmux incoming WebRTC to RTMP |
+| `nack` | `on` | Enable NACK retransmission |
+| `twcc` | `on` | Enable TWCC bandwidth estimation |
+| `stun_timeout` | `30` | Session timeout in seconds |
+| `dtls_role` | `passive` | DTLS role: `passive` or `active` |
+| `opus_bitrate` | `48000` | Audio bitrate for RTMP-to-RTC (bps) |
+| `aac_bitrate` | `48000` | Audio bitrate for RTC-to-RTMP (bps) |
+| `pli_for_rtmp` | `6.0` | PLI interval in seconds for RTC-to-RTMP |
+
+## Candidate Configuration
+
+The `candidate` is the IP address advertised to WebRTC clients in SDP. Getting this right is the most common source of WebRTC connection failures.
+
+<Warning>
+  In Docker or behind NAT, SRS cannot auto-detect the correct public IP. You **must** set the candidate to the external/public IP of your server, or connections will fail silently.
+</Warning>
+
+### Setting the candidate
+
+<Tabs>
+  <Tab title="Environment variable (recommended)">
+    ```bash
+    export CANDIDATE="203.0.113.1"
+    ./objs/srs -c conf/rtc.conf
+    ```
+
+    In `conf/rtc.conf`:
+    ```conf
+    rtc_server {
+        enabled   on;
+        listen    8000;
+        candidate $CANDIDATE;
+    }
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker run --rm -it \
+      -p 1935:1935 -p 1985:1985 -p 8080:8080 -p 8000:8000/udp \
+      -e CANDIDATE="203.0.113.1" \
+      ossrs/srs:latest
+    ```
+  </Tab>
+  <Tab title="Static IP in config">
+    ```conf
+    rtc_server {
+        enabled   on;
+        listen    8000;
+        candidate 203.0.113.1;
+    }
+    ```
+  </Tab>
+  <Tab title="Auto-detect">
+    Use `*` to let SRS attempt automatic IP detection. This works reliably only when SRS is directly on the public interface (not behind NAT or in Docker).
+
+    ```conf
+    rtc_server {
+        enabled   on;
+        listen    8000;
+        candidate *;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+  You can also override the candidate per-request using the `eip` query parameter on the WHIP/WHEP URL:
+
+  ```
+  http://localhost:1985/rtc/v1/whip/?app=live&stream=livestream&eip=203.0.113.1
+  http://localhost:1985/rtc/v1/whip/?app=live&stream=livestream&eip=203.0.113.1:18000
+  ```
+</Tip>
+
+## WHIP and WHEP Endpoints
+
+SRS implements the WHIP and WHEP standards for WebRTC signaling over HTTP.
+
+### WHIP — Publishing
+
+Send a POST request with an SDP offer to publish a stream:
+
+```
+POST http://localhost:1985/rtc/v1/publish/
+```
+
+**Query parameters:**
+
+| Parameter | Example | Description |
+|-----------|---------|-------------|
+| `app` | `live` | Application name |
+| `stream` | `livestream` | Stream name |
+
+**Example using curl:**
+
+```bash
+curl -X POST http://localhost:1985/rtc/v1/publish/ \
+  -H "Content-Type: application/sdp" \
+  --data-binary @offer.sdp \
+  "?app=live&stream=livestream"
+```
+
+### WHEP — Playing
+
+Send a POST request with an SDP offer to play a stream:
+
+```
+POST http://localhost:1985/rtc/v1/play/
+```
+
+**Example using curl:**
+
+```bash
+curl -X POST http://localhost:1985/rtc/v1/play/ \
+  -H "Content-Type: application/sdp" \
+  --data-binary @offer.sdp \
+  "?app=live&stream=livestream"
+```
+
+## Setup
+
+<Steps>
+  <Step title="Start SRS with WebRTC config">
+    ```bash
+    export CANDIDATE="your-public-ip"
+    ./objs/srs -c conf/rtc.conf
+    ```
+  </Step>
+  <Step title="Publish via FFmpeg (WHIP)">
+    ```bash
+    ffmpeg -re -i input.mp4 \
+      -c:v libx264 -c:a opus \
+      -f whip "http://localhost:1985/rtc/v1/publish/?app=live&stream=livestream"
+    ```
+
+    Or publish RTMP and let SRS convert to WebRTC (requires `rtmp_to_rtc on`):
+
+    ```bash
+    ffmpeg -re -i input.mp4 -c:v libx264 -c:a aac \
+      -f flv rtmp://localhost/live/livestream
+    ```
+  </Step>
+  <Step title="Play in browser">
+    Open the SRS built-in WebRTC player:
+
+    ```
+    http://localhost:8080/players/rtc_player.html?stream=livestream
+    ```
+
+    Or use the WHEP endpoint from a custom player:
+
+    ```javascript
+    const pc = new RTCPeerConnection();
+    // ... create offer, POST to WHEP endpoint
+    ```
+  </Step>
+</Steps>
+
+## HTTPS Requirement for Browsers
+
+Modern browsers require **HTTPS** to access the camera/microphone APIs (`getUserMedia`) needed for WebRTC publishing. For local development, `localhost` is treated as a secure origin.
+
+<Warning>
+  For production deployments where users publish from a browser, SRS (or a reverse proxy in front of it) must serve the signaling API over HTTPS. Configure Nginx or Caddy to proxy HTTPS to SRS's HTTP API port 1985.
+</Warning>
+
+## Codec Support
+
+| Type | Supported Codecs |
+|------|-----------------|
+| Video | H.264, H.265 (HEVC), VP8, VP9 |
+| Audio | Opus, G.711 (PCMU/PCMA) |
+
+<Note>
+  When converting RTMP (AAC audio) to WebRTC, SRS automatically transcodes audio to Opus. When converting WebRTC (Opus) to RTMP, SRS transcodes Opus to AAC.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="RTMP" href="/protocols/rtmp">
+    Use RTMP to ingest streams into SRS
+  </Card>
+  <Card title="HLS" href="/protocols/hls">
+    Deliver HLS to any compatible device
+  </Card>
+  <Card title="HTTP-FLV" href="/protocols/http-flv">
+    Low-latency FLV over HTTP
+  </Card>
+  <Card title="Deployment: Docker" href="/deployment/docker">
+    Run SRS in Docker with WebRTC
+  </Card>
+</CardGroup>

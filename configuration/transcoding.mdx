@@ -1,0 +1,415 @@
+---
+title: "Transcoding"
+description: "Configure FFmpeg-based transcoding in SRS to convert codecs, change bitrates, produce multiple output streams, or run custom FFmpeg commands."
+---
+
+SRS uses FFmpeg as its transcoding engine. When a stream is published to a vhost with `transcode {}` enabled, SRS spawns an FFmpeg process to read the stream from its internal RTMP server and write one or more transcoded streams back to it.
+
+## Requirements
+
+FFmpeg must be available either at the path specified in the config or in `$PATH`. SRS ships a bundled FFmpeg build at `./objs/ffmpeg/bin/ffmpeg` when built with the `--with-ffmpeg` flag.
+
+```bash
+# Check FFmpeg is available
+./objs/ffmpeg/bin/ffmpeg -version
+
+# Or use system FFmpeg
+which ffmpeg
+```
+
+## Basic transcoding config
+
+The `transcode {}` block lives inside a vhost. Each `engine {}` sub-block defines one output stream.
+
+```conf
+vhost __defaultVhost__ {
+    transcode {
+        # Enable transcoding for this vhost
+        enabled     on;
+
+        # Path to FFmpeg binary
+        ffmpeg      ./objs/ffmpeg/bin/ffmpeg;
+
+        # Transcode engine named "ff"
+        engine ff {
+            enabled         on;
+            vcodec          libx264;
+            vthreads        4;
+            vprofile        main;
+            vpreset         medium;
+            vparams {
+            }
+            acodec          libfdk_aac;
+            aparams {
+            }
+            # Output back to SRS; [engine] becomes "ff"
+            output          rtmp://127.0.0.1:[port]/[app]/[stream]_[engine]?vhost=[vhost];
+        }
+    }
+}
+```
+
+A stream published as `rtmp://server/live/original` produces a transcoded output at `rtmp://server/live/original_ff`.
+
+## Engine parameters reference
+
+The `engine {}` block maps directly to FFmpeg command-line arguments:
+
+| Parameter | FFmpeg flag | Description |
+|---|---|---|
+| `iformat` | `-f` (input) | Input format. `flv` for RTMP, `off` to let FFmpeg detect. |
+| `vcodec` | `-vcodec` | Video encoder: `libx264`, `libx265`, `copy`, `vn` (disable). |
+| `vbitrate` | `-b:v` | Video bitrate in kbps. `0` = use source bitrate. |
+| `vfps` | `-r` | Output frame rate. `0` = use source fps. |
+| `vwidth` | `-s` (width) | Output width in pixels. Must be even. `0` = use source width. |
+| `vheight` | `-s` (height) | Output height in pixels. Must be even. `0` = use source height. |
+| `vthreads` | `-threads` | FFmpeg encoding threads. |
+| `vprofile` | `-profile:v` | H.264 profile: `baseline`, `main`, `high`. |
+| `vpreset` | `-preset` | Encoding speed/quality tradeoff: `ultrafast` … `veryslow`. |
+| `vfilter {}` | `-filter_complex` / `-vf` | FFmpeg video filters. |
+| `vparams {}` | (after `-preset`) | Additional FFmpeg video parameters. |
+| `acodec` | `-acodec` | Audio encoder: `libfdk_aac`, `aac`, `libmp3lame`, `copy`, `an`. |
+| `abitrate` | `-b:a` | Audio bitrate in kbps. `0` = use source bitrate. |
+| `asample_rate` | `-ar` | Audio sample rate. Valid RTMP values: `44100`, `22050`, `11025`. |
+| `achannels` | `-ac` | Audio channels: `1` (mono), `2` (stereo). |
+| `aparams {}` | (after `-ac`) | Additional FFmpeg audio parameters. |
+| `oformat` | `-f` (output) | Output format. `flv` for RTMP. |
+| `output` | `-y` | Output URL with variable substitution. |
+
+### Output URL variables
+
+| Variable | Value |
+|---|---|
+| `[vhost]` | Current vhost name |
+| `[port]` | RTMP listen port (default: 1935) |
+| `[app]` | Stream application name |
+| `[stream]` | Stream name |
+| `[engine]` | Name of the engine block |
+
+## Full engine example
+
+This is the complete engine block from `full.conf` showing all available parameters:
+
+```conf
+vhost example.transcode.srs.com {
+    transcode {
+        enabled on;
+        ffmpeg  ./objs/ffmpeg/bin/ffmpeg;
+
+        engine example {
+            enabled on;
+
+            # Pre-input options (before -i)
+            perfile {
+                re;
+                rtsp_transport tcp;
+            }
+
+            # Input format
+            iformat flv;
+
+            # Video filter: overlay a logo
+            vfilter {
+                i               ./doc/ffmpeg-logo.png;
+                filter_complex  'overlay=10:10';
+            }
+
+            # Video encoding
+            vcodec   libx264;
+            vbitrate 1500;
+            vfps     25;
+            vwidth   768;
+            vheight  320;
+            vthreads 12;
+            vprofile main;
+            vpreset  medium;
+
+            # Extra x264 params
+            vparams {
+                t          100;
+                coder      1;
+                b_strategy 2;
+                bf         3;
+                refs       10;
+            }
+
+            # Audio encoding
+            acodec      libfdk_aac;
+            abitrate    70;
+            asample_rate 44100;
+            achannels   2;
+
+            # Extra audio params
+            aparams {
+                profile:a aac_low;
+                bsf:a     aac_adtstoasc;
+            }
+
+            # Output format and destination
+            oformat flv;
+            output  rtmp://127.0.0.1:[port]/[app]/[stream]_[engine]?vhost=[vhost];
+        }
+    }
+}
+```
+
+## Multiple output streams
+
+Add multiple `engine {}` blocks to produce several output streams from one input — for example, a high-definition and a low-definition rendition:
+
+```conf
+vhost __defaultVhost__ {
+    transcode {
+        enabled on;
+        ffmpeg  ./objs/ffmpeg/bin/ffmpeg;
+
+        engine hd {
+            enabled     on;
+            vcodec      libx264;
+            vbitrate    1500;
+            vfps        25;
+            vwidth      1280;
+            vheight     720;
+            vthreads    4;
+            vprofile    main;
+            vpreset     medium;
+            acodec      libfdk_aac;
+            abitrate    128;
+            asample_rate 44100;
+            achannels   2;
+            output      rtmp://127.0.0.1:[port]/[app]/[stream]_[engine]?vhost=[vhost];
+        }
+
+        engine sd {
+            enabled     on;
+            vcodec      libx264;
+            vbitrate    500;
+            vfps        25;
+            vwidth      640;
+            vheight     360;
+            vthreads    2;
+            vprofile    baseline;
+            vpreset     fast;
+            acodec      libfdk_aac;
+            abitrate    64;
+            asample_rate 44100;
+            achannels   2;
+            output      rtmp://127.0.0.1:[port]/[app]/[stream]_[engine]?vhost=[vhost];
+        }
+    }
+}
+```
+
+A stream published as `rtmp://server/live/raw` produces:
+- `rtmp://server/live/raw_hd` — 1280×720 at 1500 kbps
+- `rtmp://server/live/raw_sd` — 640×360 at 500 kbps
+
+## Audio-only transcoding (with video passthrough)
+
+This pattern is useful when the source has a video codec that HLS supports directly (H.264) but an audio codec it does not (raw AAC, MP3). Copy the video stream and re-encode only the audio:
+
+```conf
+vhost __defaultVhost__ {
+    hls {
+        enabled         on;
+        hls_fragment    10;
+        hls_window      60;
+        hls_path        ./objs/nginx/html;
+        hls_m3u8_file   [app]/[stream].m3u8;
+        hls_ts_file     [app]/[stream]-[seq].ts;
+    }
+    transcode {
+        enabled     on;
+        ffmpeg      ./objs/ffmpeg/bin/ffmpeg;
+
+        engine ff {
+            enabled         on;
+            # Pass video through without re-encoding
+            vcodec          copy;
+            # Re-encode audio to AAC
+            acodec          libfdk_aac;
+            aparams {
+            }
+            output          rtmp://127.0.0.1:[port]/[app]/[stream]_[engine]?vhost=[vhost];
+        }
+    }
+}
+```
+
+## Codec passthrough
+
+Use `copy` for either codec to pass it through without re-encoding. This saves CPU and preserves quality:
+
+<CodeGroup>
+```conf Video copy, audio re-encode
+engine passthrough_video {
+    enabled  on;
+    vcodec   copy;
+    acodec   libfdk_aac;
+    abitrate 128;
+    output   rtmp://127.0.0.1:[port]/[app]/[stream]_[engine]?vhost=[vhost];
+}
+```
+
+```conf Audio copy, video re-encode
+engine passthrough_audio {
+    enabled  on;
+    vcodec   libx264;
+    vbitrate 1000;
+    vprofile main;
+    vpreset  medium;
+    acodec   copy;
+    output   rtmp://127.0.0.1:[port]/[app]/[stream]_[engine]?vhost=[vhost];
+}
+```
+
+```conf Full passthrough (remux only)
+engine remux {
+    enabled  on;
+    vcodec   copy;
+    acodec   copy;
+    output   rtmp://127.0.0.1:[port]/[app]/[stream]_[engine]?vhost=[vhost];
+}
+```
+</CodeGroup>
+
+## H.264 to H.265 transcoding
+
+<Note>
+H.265 (HEVC) transcoding requires FFmpeg to be built with `libx265`. The bundled SRS FFmpeg build may not include it; check with `ffmpeg -codecs | grep hevc`.
+</Note>
+
+```conf
+vhost hevc.example.com {
+    transcode {
+        enabled on;
+        ffmpeg  ./objs/ffmpeg/bin/ffmpeg;
+
+        engine hevc {
+            enabled     on;
+            vcodec      libx265;
+            vbitrate    800;
+            vfps        25;
+            vwidth      1280;
+            vheight     720;
+            vthreads    4;
+            vpreset     medium;
+            acodec      copy;
+            oformat     flv;
+            output      rtmp://127.0.0.1:[port]/[app]/[stream]_[engine]?vhost=[vhost];
+        }
+    }
+}
+```
+
+## FFmpeg log configuration
+
+Control where FFmpeg writes its logs:
+
+```conf
+# Directory for per-stream FFmpeg log files
+# Use /dev/null to discard logs entirely
+ff_log_dir ./objs;
+
+# FFmpeg log level: quiet, panic, fatal, error, warning, info, verbose, debug, trace
+ff_log_level info;
+```
+
+Each active transcode engine creates a log file at `<ff_log_dir>/srs_<engine>_<stream>.log`.
+
+## Custom FFmpeg commands with exec
+
+The `exec {}` block runs an arbitrary command when a stream is published. Unlike `transcode {}`, it does not manage the FFmpeg process lifecycle — you control the full command line.
+
+```conf
+vhost __defaultVhost__ {
+    exec {
+        enabled on;
+
+        # Run when a stream is published
+        # Variables: [url], [vhost], [app], [stream], [port], [engine]
+        publish ./objs/ffmpeg/bin/ffmpeg -f flv -i [url] -c copy -y ./[stream].flv;
+    }
+}
+```
+
+<Tip>
+Use `exec` for custom recording, stream forwarding to external services, or any FFmpeg operation not covered by the `transcode` engine model. The `[url]` variable expands to the full RTMP URL of the published stream.
+</Tip>
+
+## Adaptive bitrate HLS with transcoding
+
+Combine multiple transcode engines with HLS to produce an adaptive bitrate (ABR) stream:
+
+```conf
+vhost abr.example.com {
+    # SRS does not generate a master playlist automatically;
+    # configure your CDN or player to use individual playlists.
+    hls {
+        enabled on;
+    }
+
+    transcode {
+        enabled on;
+        ffmpeg  ./objs/ffmpeg/bin/ffmpeg;
+
+        # High quality rendition
+        engine hd {
+            enabled     on;
+            vcodec      libx264;
+            vbitrate    2000;
+            vfps        30;
+            vwidth      1920;
+            vheight     1080;
+            vprofile    high;
+            vpreset     medium;
+            acodec      libfdk_aac;
+            abitrate    192;
+            output      rtmp://127.0.0.1:[port]/[app]/[stream]_hd?vhost=[vhost];
+        }
+
+        # Medium quality rendition
+        engine md {
+            enabled     on;
+            vcodec      libx264;
+            vbitrate    800;
+            vfps        25;
+            vwidth      1280;
+            vheight     720;
+            vprofile    main;
+            vpreset     medium;
+            acodec      libfdk_aac;
+            abitrate    128;
+            output      rtmp://127.0.0.1:[port]/[app]/[stream]_md?vhost=[vhost];
+        }
+
+        # Low quality rendition for mobile
+        engine ld {
+            enabled     on;
+            vcodec      libx264;
+            vbitrate    300;
+            vfps        15;
+            vwidth      640;
+            vheight     360;
+            vprofile    baseline;
+            vpreset     fast;
+            acodec      libfdk_aac;
+            abitrate    64;
+            output      rtmp://127.0.0.1:[port]/[app]/[stream]_ld?vhost=[vhost];
+        }
+    }
+}
+```
+
+Publishing `rtmp://server/live/source` produces three HLS playlists:
+- `/live/source_hd.m3u8` — 1080p
+- `/live/source_md.m3u8` — 720p
+- `/live/source_ld.m3u8` — 360p
+
+## Further reading
+
+- [Configuration Overview](/configuration/overview) — config file format, environment variables
+- [Virtual Hosts](/configuration/vhosts) — where the `transcode {}` block lives
+- [HLS](/protocols/hls) — HLS output configuration
+- [HTTP Callbacks](/advanced/http-callbacks) — trigger transcoding based on stream events
+- [DVR](/advanced/dvr) — recording streams to file

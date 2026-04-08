@@ -1,0 +1,436 @@
+---
+title: "Streams API"
+description: "HTTP API endpoints for listing active streams and connected clients, and for disconnecting clients."
+keywords: ["streams api", "clients api", "kick client", "stream list", "srs api"]
+---
+
+The Streams API provides real-time information about active streams and connected clients. You can paginate results and disconnect individual clients by ID.
+
+<Note>
+  The HTTP API must be enabled. See the [HTTP API Overview](/api/overview) for configuration details.
+</Note>
+
+## Endpoint reference
+
+| Method | Path                       | Description                           |
+|--------|----------------------------|---------------------------------------|
+| GET    | `/api/v1/streams`          | List all active streams               |
+| GET    | `/api/v1/streams/{id}`     | Get a single stream by ID             |
+| GET    | `/api/v1/clients`          | List all connected clients            |
+| GET    | `/api/v1/clients/{id}`     | Get a single client by ID             |
+| DELETE | `/api/v1/clients/{id}`     | Disconnect (kick) a client            |
+
+---
+
+## GET /api/v1/streams
+
+Returns all active streams across all virtual hosts. Supports pagination.
+
+### Query parameters
+
+<ParamField query="start" type="integer" default="0">
+  Zero-based offset into the stream list. Use this with `count` to paginate.
+</ParamField>
+
+<ParamField query="count" type="integer" default="10">
+  Maximum number of streams to return. Minimum value is `1`.
+</ParamField>
+
+### Examples
+
+<CodeGroup>
+
+```bash first page
+curl "http://localhost:1985/api/v1/streams"
+```
+
+```bash paginated
+curl "http://localhost:1985/api/v1/streams?start=0&count=10"
+```
+
+```bash second page
+curl "http://localhost:1985/api/v1/streams?start=10&count=10"
+```
+
+</CodeGroup>
+
+### Response
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "total": 2,
+  "streams": [
+    {
+      "id": "stream-001",
+      "name": "livestream",
+      "vhost": "__defaultVhost__",
+      "app": "live",
+      "tcUrl": "rtmp://192.168.1.10/live",
+      "url": "/live/livestream",
+      "live_ms": 1712345600000,
+      "clients": 5,
+      "frames": 14400,
+      "send_bytes": 15728640,
+      "recv_bytes": 3145728,
+      "kbps": {
+        "recv_30s": 1200,
+        "send_30s": 6000
+      },
+      "publish": {
+        "active": true,
+        "cid": "conn-abc123"
+      },
+      "video": {
+        "codec": "H264",
+        "profile": "High",
+        "level": "4.0",
+        "width": 1920,
+        "height": 1080
+      },
+      "audio": {
+        "codec": "AAC",
+        "sample_rate": 44100,
+        "channel": 2,
+        "profile": "LC"
+      }
+    }
+  ]
+}
+```
+
+<ResponseField name="total" type="integer">
+  Total number of active streams (before pagination).
+</ResponseField>
+
+<ResponseField name="streams" type="array">
+  <Expandable title="Stream object fields">
+    <ResponseField name="id" type="string">
+      Unique stream identifier assigned by SRS.
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      Stream name (the last path component of the stream URL).
+    </ResponseField>
+    <ResponseField name="vhost" type="string">
+      Virtual host this stream belongs to.
+    </ResponseField>
+    <ResponseField name="app" type="string">
+      Application name (e.g. `"live"`).
+    </ResponseField>
+    <ResponseField name="tcUrl" type="string">
+      RTMP TC URL used by the publisher.
+    </ResponseField>
+    <ResponseField name="url" type="string">
+      Full stream path (e.g. `"/live/livestream"`).
+    </ResponseField>
+    <ResponseField name="live_ms" type="integer">
+      Timestamp in milliseconds since epoch when the stream started.
+    </ResponseField>
+    <ResponseField name="clients" type="integer">
+      Number of clients currently connected to this stream.
+    </ResponseField>
+    <ResponseField name="frames" type="integer">
+      Total video frames received since stream start.
+    </ResponseField>
+    <ResponseField name="recv_bytes" type="integer">
+      Total bytes received from the publisher since stream start.
+    </ResponseField>
+    <ResponseField name="send_bytes" type="integer">
+      Total bytes sent to all players since stream start.
+    </ResponseField>
+    <ResponseField name="kbps.recv_30s" type="integer">
+      Inbound bitrate over the last 30 seconds, in kbps.
+    </ResponseField>
+    <ResponseField name="kbps.send_30s" type="integer">
+      Outbound bitrate over the last 30 seconds, in kbps.
+    </ResponseField>
+    <ResponseField name="publish.active" type="boolean">
+      Whether a publisher is currently connected to this stream.
+    </ResponseField>
+    <ResponseField name="publish.cid" type="string">
+      Connection ID of the current publisher.
+    </ResponseField>
+    <ResponseField name="video.codec" type="string">
+      Video codec name (e.g. `"H264"`, `"H265"`).
+    </ResponseField>
+    <ResponseField name="video.width" type="integer">
+      Video frame width in pixels.
+    </ResponseField>
+    <ResponseField name="video.height" type="integer">
+      Video frame height in pixels.
+    </ResponseField>
+    <ResponseField name="audio.codec" type="string">
+      Audio codec name (e.g. `"AAC"`).
+    </ResponseField>
+    <ResponseField name="audio.sample_rate" type="integer">
+      Audio sample rate in Hz.
+    </ResponseField>
+    <ResponseField name="audio.channel" type="integer">
+      Number of audio channels (1 = mono, 2 = stereo).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## GET /api/v1/streams/{id}
+
+Returns a single stream object for the given stream ID.
+
+### Path parameters
+
+<ParamField path="id" type="string" required>
+  The stream ID returned by the list endpoint.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/streams/stream-001
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "stream": {
+    "id": "stream-001",
+    "name": "livestream",
+    "vhost": "__defaultVhost__",
+    "app": "live",
+    "clients": 5,
+    "frames": 14400,
+    "recv_bytes": 3145728,
+    "send_bytes": 15728640
+  }
+}
+```
+
+Returns error code `404` (`ERROR_RTMP_STREAM_NOT_FOUND`) if no stream with the given ID exists.
+
+---
+
+## GET /api/v1/clients
+
+Returns all connected clients (publishers and players). Supports pagination.
+
+### Query parameters
+
+<ParamField query="start" type="integer" default="0">
+  Zero-based offset into the client list.
+</ParamField>
+
+<ParamField query="count" type="integer" default="10">
+  Maximum number of clients to return. Minimum value is `1`.
+</ParamField>
+
+### Examples
+
+<CodeGroup>
+
+```bash first page
+curl "http://localhost:1985/api/v1/clients"
+```
+
+```bash paginated
+curl "http://localhost:1985/api/v1/clients?start=0&count=10"
+```
+
+</CodeGroup>
+
+### Response
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "total": 6,
+  "clients": [
+    {
+      "id": "conn-abc123",
+      "vhost": "__defaultVhost__",
+      "stream": "livestream",
+      "ip": "203.0.113.45",
+      "pageUrl": "https://example.com/player.html",
+      "swfUrl": "",
+      "atime": 1712345620000,
+      "send_bytes": 3145728,
+      "recv_bytes": 2048,
+      "kbps": {
+        "recv_30s": 0,
+        "send_30s": 5800
+      },
+      "type": "fmle-publish",
+      "publish": true
+    },
+    {
+      "id": "conn-def456",
+      "vhost": "__defaultVhost__",
+      "stream": "livestream",
+      "ip": "198.51.100.22",
+      "pageUrl": "",
+      "swfUrl": "",
+      "atime": 1712345650000,
+      "send_bytes": 2097152,
+      "recv_bytes": 0,
+      "kbps": {
+        "recv_30s": 0,
+        "send_30s": 5200
+      },
+      "type": "rtmp-play",
+      "publish": false
+    }
+  ]
+}
+```
+
+<ResponseField name="total" type="integer">
+  Total number of connected clients (before pagination).
+</ResponseField>
+
+<ResponseField name="clients" type="array">
+  <Expandable title="Client object fields">
+    <ResponseField name="id" type="string">
+      Unique client connection ID assigned by SRS.
+    </ResponseField>
+    <ResponseField name="vhost" type="string">
+      Virtual host this client is connected to.
+    </ResponseField>
+    <ResponseField name="stream" type="string">
+      Stream name this client is publishing to or playing.
+    </ResponseField>
+    <ResponseField name="ip" type="string">
+      Client IP address.
+    </ResponseField>
+    <ResponseField name="pageUrl" type="string">
+      Page URL reported by the client (RTMP `pageUrl`). May be empty.
+    </ResponseField>
+    <ResponseField name="swfUrl" type="string">
+      SWF URL reported by the client (RTMP `swfUrl`). May be empty.
+    </ResponseField>
+    <ResponseField name="atime" type="integer">
+      Timestamp in milliseconds since epoch when the client connected.
+    </ResponseField>
+    <ResponseField name="send_bytes" type="integer">
+      Total bytes sent to this client since connection.
+    </ResponseField>
+    <ResponseField name="recv_bytes" type="integer">
+      Total bytes received from this client since connection.
+    </ResponseField>
+    <ResponseField name="kbps.recv_30s" type="integer">
+      Inbound bitrate for this client over the last 30 seconds, in kbps.
+    </ResponseField>
+    <ResponseField name="kbps.send_30s" type="integer">
+      Outbound bitrate for this client over the last 30 seconds, in kbps.
+    </ResponseField>
+    <ResponseField name="type" type="string">
+      Connection type. Common values: `"fmle-publish"`, `"rtmp-play"`, `"rtc-play"`, `"rtc-publish"`.
+    </ResponseField>
+    <ResponseField name="publish" type="boolean">
+      `true` if this client is a publisher; `false` if it is a player.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## GET /api/v1/clients/{id}
+
+Returns a single client object by connection ID.
+
+### Path parameters
+
+<ParamField path="id" type="string" required>
+  The client connection ID returned by the list endpoint.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:1985/api/v1/clients/conn-abc123
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345",
+  "client": {
+    "id": "conn-abc123",
+    "vhost": "__defaultVhost__",
+    "stream": "livestream",
+    "ip": "203.0.113.45",
+    "atime": 1712345620000,
+    "send_bytes": 3145728,
+    "recv_bytes": 2048,
+    "type": "fmle-publish",
+    "publish": true
+  }
+}
+```
+
+Returns error code `404` (`ERROR_RTMP_CLIENT_NOT_FOUND`) if no client with the given ID exists.
+
+---
+
+## DELETE /api/v1/clients/{id}
+
+Forcibly disconnects a client. The connection is expired and closed server-side. The client will experience a connection drop.
+
+### Path parameters
+
+<ParamField path="id" type="string" required>
+  The client connection ID to disconnect.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl -X DELETE http://localhost:1985/api/v1/clients/conn-abc123
+```
+
+</CodeGroup>
+
+```json
+{
+  "code": 0,
+  "server": "vid-k23d8x3",
+  "service": "svc-a1b2c3d",
+  "pid": "12345"
+}
+```
+
+<Warning>
+  Deleting a publisher client will close the publish connection. All players watching that stream will stop receiving data.
+</Warning>
+
+Returns error code `404` (`ERROR_RTMP_CLIENT_NOT_FOUND`) if no client with the given ID is found.
+
+---
+
+<CardGroup cols={2}>
+  <Card title="Server statistics" icon="chart-bar" href="/api/server-stats">
+    CPU, memory, vhosts, and performance counters.
+  </Card>
+  <Card title="WebRTC API" icon="video" href="/api/rtc">
+    WHIP and WHEP signaling for WebRTC.
+  </Card>
+  <Card title="HTTP callbacks" icon="webhook" href="/advanced/http-callbacks">
+    Receive notifications when clients connect or disconnect.
+  </Card>
+  <Card title="HTTP API overview" icon="book-open" href="/api/overview">
+    Base URL, authentication, and response format.
+  </Card>
+</CardGroup>
